@@ -10,6 +10,8 @@
 #include <uxtheme.h>
 #include <fstream>
 #include <map>
+#include <set>
+#include <utility>
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Component data model
@@ -70,6 +72,10 @@ struct PreviewRow
     bool         isLeaf = false;
 };
 
+// Long-running operation, driven in chunks by a WM_TIMER state machine so the
+// UI thread never blocks.
+enum class Op { None, Scanning, Building };
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Control IDs
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +96,7 @@ enum CtrlId
     IDC_BTN_SETTINGS  = 3112,
 };
 
-inline constexpr UINT_PTR TIMER_SOURCE_POLL = 1;
+inline constexpr UINT_PTR TIMER_OP = 1;   // drives chunked scan/build
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Layout constants
@@ -108,6 +114,7 @@ inline constexpr int LEFT_COL_PCT = 52;
 
 inline constexpr int FONT_NORMAL = 13;
 inline constexpr int FONT_SMALL  = 11;
+inline constexpr int FONT_HEADER = 14;
 inline constexpr int FONT_BRAND  = 16;
 
 inline constexpr const wchar_t* WND_CLASS = L"TigerFoldersVdjDialog";
@@ -142,26 +149,36 @@ public:
     std::wstring segmentFor (const Component& c, const ScannedSong& s) const;
     std::wstring buildPathFor (const ScannedSong& s) const;       // root/.../leaf
 
-    // Scan (TigerFoldersScan.cpp)
-    void scanSelectedFolder();          // fills `songs`
+    bool isUnfiled (const ScannedSong& s) const;   // path collapses to just the root
+
+    // Scan — chunked state machine (TigerFoldersScan.cpp)
+    void scanBegin();
+    void scanStep();                    // process one browser row per tick
+    void scanFinish();
     void rebuildPreview();              // fills `previewRows` + counts from `songs`
 
     // Write engine (TigerFoldersWrite.cpp)
+    bool resolveMyListsRoot (fs::path& out) const;   // true only if an existing MyLists dir
     bool managedRootExists() const;
     void removeManagedRoot();
-    void buildVirtualFolders();         // writes everything for `songs`
+    void buildPlan();                   // compute planFolders + planLeaves + counts
+    void buildBegin (bool wipeFirst);
+    void buildStep();                   // process a batch of folders/leaves per tick
+    void buildFinish();
     bool ensureVirtualFolderListFileExists (const std::wstring& listPath);
-    void ensureVirtualFolderPathExists (const std::wstring& fullPath,
-                                        int& createdLevels, int& existingLevels);
-    bool appendSongToVirtualFolderListFile (const std::wstring& listPath,
-                                            const std::wstring& songPath) const;
+    void registerVirtualFolder (const std::wstring& path);   // add_virtualfolder
+    bool appendSongsToLeaf (const std::wstring& leafPath,
+                            const std::vector<std::wstring>& songPaths) const;
 
     // UI (TigerFoldersUI.cpp)
     void uiRepopulateModeCombo();       // refill mode combo for current field
     void uiSyncAddButton();             // enable/disable ADD
     void uiRefreshComponentList();
     void uiRefreshPreviewList();
-    void uiUpdateStatus (const std::wstring& msg);
+    void uiUpdateStatus (const std::wstring& msg, bool error = false);
+    void uiResetAddRow();               // reset combos to placeholder after add/update
+    void uiLoadComponentForEdit (int idx);   // double-click → edit in place
+    void uiSetOpRunning (bool running); // toggle button labels/enable during scan/build
 
     // Parameter IDs
     enum ParamId { PID_OPEN = 0 };
@@ -177,8 +194,26 @@ public:
 
     std::wstring             selectedFolderPath;   // currently selected VDJ folder
     std::wstring             statusText;
+    bool                     statusError = false;
 
     fs::path                 settingsPath;
+
+    // ── Chunked operation state ───────────────────────────────────────────
+    Op   op       = Op::None;
+    int  opIndex  = 0;
+    int  opTotal  = 0;
+    bool opCancel = false;
+    std::wstring preScanFolder;          // browser folder to restore after scan
+
+    // Build plan (computed by buildPlan)
+    std::vector<std::wstring> planFolders;   // unique folder paths, parent-first
+    std::vector<std::pair<std::wstring, std::vector<std::wstring>>> planLeaves;
+    size_t planLeafIdx = 0;
+    bool   buildPhaseFolders = true;     // phase 1 = create folders, phase 2 = songs
+    bool   buildWipeFirst = false;
+
+    // Result counters
+    int cntFolders = 0, cntFiled = 0, cntUnfiled = 0, cntErrors = 0;
 
     // Pending "add" selection (driven by the two combos)
     Field      pendingField    = Field::Genre;
@@ -189,6 +224,15 @@ public:
     bool       fieldChosen      = false;   // a primary field has been picked
 
     bool       showSettings     = false;
+    int        editingIndex     = -1;    // component being edited in place, or -1
+
+    // Drag-reorder state for the component list
+    bool       dragging   = false;
+    int        dragTo     = -1;
+    POINT      dragStart  = {};
+
+    // Button hover (for owner-draw highlight)
+    int        hoverBtnId = -1;
 
     // ── Win32 handles ──────────────────────────────────────────────────────
     HWND hDlg            = nullptr;
@@ -212,6 +256,7 @@ public:
     HFONT fontNormal = nullptr;
     HFONT fontBold   = nullptr;
     HFONT fontSmall  = nullptr;
+    HFONT fontHeader = nullptr;   // section headers
     HFONT fontTitle  = nullptr;
     HBRUSH inputBrush = nullptr;
 };

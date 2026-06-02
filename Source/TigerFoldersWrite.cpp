@@ -1,14 +1,17 @@
 //==============================================================================
 // TigerFolders - Virtual folder write engine
-// Adapted from tigertag-vst's TigerTagVirtualFolder.cpp:
-//   create .vdjfolder / .subfolders / order, append song refs, register in VDJ.
+// Adapted from tigertag-vst's TigerTagVirtualFolder.cpp, but batched:
+//   - plan unique folders + per-leaf song groups once
+//   - create each folder + register it exactly once
+//   - write each leaf .vdjfolder exactly once
+// Driven in chunks by the WM_TIMER state machine so the UI never blocks.
 //==============================================================================
 
 #include "TigerFolders.h"
 #include <fstream>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Path-splitting helper shared by the routines below
+//  Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::vector<std::wstring> splitPath (const std::wstring& p)
@@ -28,8 +31,53 @@ static std::vector<std::wstring> splitPath (const std::wstring& p)
     return parts;
 }
 
+static std::string escapeArg (const std::wstring& s)
+{
+    std::string u = toUtf8 (s), out;
+    for (char c : u) { if (c == '"') out += "\\\""; else out += c; }
+    return out;
+}
+
+static std::string xmlEscape (const std::string& s)
+{
+    std::string out; out.reserve (s.size() + 16);
+    for (char c : s)
+    {
+        switch (c)
+        {
+            case '&':  out += "&amp;";  break;
+            case '<':  out += "&lt;";   break;
+            case '>':  out += "&gt;";   break;
+            case '"':  out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default:   out.push_back (c); break;
+        }
+    }
+    return out;
+}
+
+static std::string toLowerA (std::string s)
+{
+    for (auto& c : s) c = (char) tolower ((unsigned char) c);
+    return s;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-//  Ensure the .vdjfolder list files (+ order entries) exist for every level
+//  MyLists root: only succeeds if an existing MyLists directory is found
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool TigerFoldersPlugin::resolveMyListsRoot (fs::path& out) const
+{
+    std::error_code ec;
+    for (const auto& c : getVdjMyListsRootCandidates())
+        if (fs::is_directory (c, ec)) { out = c; return true; }
+    auto cands = getVdjMyListsRootCandidates();
+    out = cands.empty() ? fs::path() : cands.front();
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Create the .vdjfolder list files (+ order entries) for every level of a path
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool TigerFoldersPlugin::ensureVirtualFolderListFileExists (const std::wstring& listPath)
@@ -60,9 +108,9 @@ bool TigerFoldersPlugin::ensureVirtualFolderListFileExists (const std::wstring& 
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<VirtualFolder />\n";
 
-    fs::path baseRoot = getPreferredVdjMyListsRoot();
+    fs::path baseRoot;
+    if (!resolveMyListsRoot (baseRoot) || baseRoot.empty()) return false;
     std::error_code ec;
-    if (baseRoot.empty()) return false;
     fs::create_directories (baseRoot, ec);
 
     bool createdAny = false;
@@ -78,7 +126,6 @@ bool TigerFoldersPlugin::ensureVirtualFolderListFileExists (const std::wstring& 
             std::ofstream out (listFile, std::ios::binary);
             if (out.is_open()) { out << xmlTemplate; createdAny = true; }
         }
-
         if (i + 1 < parts.size())
         {
             currentDir = currentDir / fs::path (name + L".subfolders");
@@ -88,112 +135,71 @@ bool TigerFoldersPlugin::ensureVirtualFolderListFileExists (const std::wstring& 
     return createdAny;
 }
 
-void TigerFoldersPlugin::ensureVirtualFolderPathExists (const std::wstring& fullPath,
-                                                        int& createdLevels, int& existingLevels)
+void TigerFoldersPlugin::registerVirtualFolder (const std::wstring& path)
 {
-    createdLevels = 0;
-    existingLevels = 0;
-
-    auto escape = [] (const std::wstring& s) -> std::string
-    {
-        std::string u = toUtf8 (s), result;
-        for (char c : u) { if (c == '"') result += "\\\""; else result += c; }
-        return result;
-    };
-
-    std::wstring current;
-    size_t start = 0;
-    while (start <= fullPath.size())
-    {
-        size_t slash = fullPath.find (L'/', start);
-        std::wstring part = (slash == std::wstring::npos)
-            ? fullPath.substr (start) : fullPath.substr (start, slash - start);
-
-        if (!part.empty())
-        {
-            if (!current.empty()) current += L"/";
-            current += part;
-            bool created = ensureVirtualFolderListFileExists (current);
-            if (created) createdLevels++;
-            else         existingLevels++;
-
-            std::wstring currentBackslash = current;
-            std::replace (currentBackslash.begin(), currentBackslash.end(), L'/', L'\\');
-
-            const std::string slashPath = escape (current);
-            const std::string backslashPath = escape (currentBackslash);
-
-            vdjSend ("add_virtualfolder \"" + slashPath + "\"");
-            if (backslashPath != slashPath)
-                vdjSend ("add_virtualfolder \"" + backslashPath + "\"");
-        }
-
-        if (slash == std::wstring::npos) break;
-        start = slash + 1;
-    }
+    std::wstring backslash = path;
+    std::replace (backslash.begin(), backslash.end(), L'/', L'\\');
+    std::string slashArg = escapeArg (path);
+    std::string backArg  = escapeArg (backslash);
+    vdjSend ("add_virtualfolder \"" + slashArg + "\"");
+    if (backArg != slashArg)
+        vdjSend ("add_virtualfolder \"" + backArg + "\"");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Append a song reference to the leaf .vdjfolder (deduped, XML-escaped)
+//  Append a whole batch of songs to a leaf .vdjfolder in a single rewrite
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool TigerFoldersPlugin::appendSongToVirtualFolderListFile (const std::wstring& listPath,
-                                                            const std::wstring& songPath) const
+bool TigerFoldersPlugin::appendSongsToLeaf (const std::wstring& leafPath,
+                                            const std::vector<std::wstring>& songPaths) const
 {
-    if (listPath.empty() || songPath.empty()) return false;
+    if (leafPath.empty() || songPaths.empty()) return false;
 
-    auto xmlEscape = [] (const std::string& s) -> std::string
-    {
-        std::string out; out.reserve (s.size() + 16);
-        for (char c : s)
-        {
-            switch (c)
-            {
-                case '&':  out += "&amp;";  break;
-                case '<':  out += "&lt;";   break;
-                case '>':  out += "&gt;";   break;
-                case '"':  out += "&quot;"; break;
-                case '\'': out += "&apos;"; break;
-                default:   out.push_back (c); break;
-            }
-        }
-        return out;
-    };
-
-    std::vector<std::wstring> parts = splitPath (listPath);
+    std::vector<std::wstring> parts = splitPath (leafPath);
     if (parts.empty()) return false;
 
-    fs::path root = getPreferredVdjMyListsRoot();
+    fs::path root;
     std::error_code ec;
+    const_cast<TigerFoldersPlugin*> (this)->resolveMyListsRoot (root);
     if (root.empty()) return false;
-
-    std::string escapedPath = xmlEscape (toUtf8 (songPath));
-    std::string token   = "path=\"" + escapedPath + "\"";
-    std::string songLine = "    <song path=\"" + escapedPath + "\" />\n";
-    std::string prefix =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        "<VirtualFolder noDuplicates=\"yes\" ordered=\"yes\">\n";
-    std::string suffix = "</VirtualFolder>\n";
 
     fs::path dir = root;
     for (size_t i = 0; i + 1 < parts.size(); ++i)
         dir /= fs::path (parts[i] + L".subfolders");
     fs::path filePath = dir / fs::path (parts.back() + L".vdjfolder");
-    if (!fs::exists (filePath, ec))
-        return false;
 
-    std::ifstream in (filePath, std::ios::binary);
-    std::string content ((std::istreambuf_iterator<char> (in)), std::istreambuf_iterator<char>());
-    in.close();
+    std::string prefix =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<VirtualFolder noDuplicates=\"yes\" ordered=\"yes\">\n";
+    std::string suffix = "</VirtualFolder>\n";
 
-    if (content.find (token) != std::string::npos)
-        return true;   // already present
+    std::string content;
+    if (fs::exists (filePath, ec))
+    {
+        std::ifstream in (filePath, std::ios::binary);
+        content.assign ((std::istreambuf_iterator<char> (in)), std::istreambuf_iterator<char>());
+    }
+    if (content.find ("</VirtualFolder>") == std::string::npos)
+        content = prefix + suffix;
+
+    std::string lowerContent = toLowerA (content);
+
+    // Build the block of new <song> lines, deduped (case-insensitive — Windows
+    // paths are case-insensitive) against existing entries and within the batch.
+    std::string additions;
+    for (const auto& wpath : songPaths)
+    {
+        std::string esc   = xmlEscape (toUtf8 (wpath));
+        std::string token = "path=\"" + esc + "\"";          // anchored by quotes
+        std::string lower = toLowerA (token);
+        if (lowerContent.find (lower) != std::string::npos) continue;
+        lowerContent += lower;                                // dedupe within batch
+        additions += "    <song path=\"" + esc + "\" />\n";
+    }
+    if (additions.empty()) return true;
 
     size_t closePos = content.find ("</VirtualFolder>");
-    if (closePos == std::string::npos)
-        content = prefix + songLine + suffix;
-    else
-        content.insert (closePos, songLine);
+    content.insert (closePos, additions);
 
     std::ofstream out (filePath, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return false;
@@ -202,7 +208,7 @@ bool TigerFoldersPlugin::appendSongToVirtualFolderListFile (const std::wstring& 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Managed-root existence / removal (for the rebuild option)
+//  Managed-root existence / removal (Rebuild option)
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool TigerFoldersPlugin::managedRootExists() const
@@ -211,8 +217,7 @@ bool TigerFoldersPlugin::managedRootExists() const
     if (root.empty()) return false;
 
     std::error_code ec;
-    auto candidates = getVdjMyListsRootCandidates();
-    for (const auto& base : candidates)
+    for (const auto& base : getVdjMyListsRootCandidates())
     {
         if (base.empty()) continue;
         if (fs::exists (base / fs::path (root + L".vdjfolder"), ec)) return true;
@@ -234,7 +239,6 @@ void TigerFoldersPlugin::removeManagedRoot()
         fs::remove (base / fs::path (root + L".vdjfolder"), ec);
         fs::remove_all (base / fs::path (root + L".subfolders"), ec);
 
-        // Drop the root entry from this directory's order file.
         fs::path orderPath = base / L"order";
         if (fs::exists (orderPath, ec))
         {
@@ -252,18 +256,137 @@ void TigerFoldersPlugin::removeManagedRoot()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Build everything for the scanned songs
+//  Plan: unique folders (parent-first) + per-leaf song groups
 // ─────────────────────────────────────────────────────────────────────────────
 
-void TigerFoldersPlugin::buildVirtualFolders()
+void TigerFoldersPlugin::buildPlan()
 {
+    planFolders.clear();
+    planLeaves.clear();
+    cntFolders = cntFiled = cntUnfiled = cntErrors = 0;
+
+    std::set<std::wstring> folderSet;
+    std::map<std::wstring, std::vector<std::wstring>> leafMap;
+
     for (const auto& s : songs)
     {
         std::wstring path = buildPathFor (s);
         if (path.empty()) continue;
 
-        int created = 0, existing = 0;
-        ensureVirtualFolderPathExists (path, created, existing);
-        appendSongToVirtualFolderListFile (path, s.filePath);
+        // All ancestor prefixes are folders that must exist.
+        std::wstring accum;
+        size_t start = 0;
+        while (start <= path.size())
+        {
+            size_t slash = path.find (L'/', start);
+            std::wstring part = (slash == std::wstring::npos)
+                ? path.substr (start) : path.substr (start, slash - start);
+            if (!part.empty())
+            {
+                accum = accum.empty() ? part : (accum + L"/" + part);
+                folderSet.insert (accum);
+            }
+            if (slash == std::wstring::npos) break;
+            start = slash + 1;
+        }
+
+        leafMap[path].push_back (s.filePath);
+        ++cntFiled;
+        if (path.find (L'/') == std::wstring::npos) ++cntUnfiled;
     }
+
+    // std::set iterates lexicographically → parents sort before their children.
+    planFolders.assign (folderSet.begin(), folderSet.end());
+    for (auto& kv : leafMap)
+        planLeaves.emplace_back (kv.first, std::move (kv.second));
+    cntFolders = (int) planFolders.size();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Begin / Step / Finish
+// ─────────────────────────────────────────────────────────────────────────────
+
+void TigerFoldersPlugin::buildBegin (bool wipeFirst)
+{
+    if (op != Op::None) return;
+
+    fs::path root;
+    if (!resolveMyListsRoot (root))
+    {
+        uiUpdateStatus (L"VirtualDJ MyLists folder not found — cannot build", true);
+        return;
+    }
+
+    buildPlan();
+    if (planFolders.empty())
+    {
+        uiUpdateStatus (L"Nothing to build — scan a folder and add components", true);
+        return;
+    }
+
+    if (wipeFirst) removeManagedRoot();
+
+    op               = Op::Building;
+    opCancel         = false;
+    buildPhaseFolders = true;
+    opIndex          = 0;
+    planLeafIdx      = 0;
+    opTotal          = (int) (planFolders.size() + planLeaves.size());
+
+    uiSetOpRunning (true);
+    uiUpdateStatus (L"Building… 0 / " + std::to_wstring (opTotal));
+    SetTimer (hDlg, TIMER_OP, 1, nullptr);
+}
+
+void TigerFoldersPlugin::buildStep()
+{
+    if (opCancel) { buildFinish(); return; }
+
+    if (buildPhaseFolders)
+    {
+        const int kPerTick = 40;
+        for (int n = 0; n < kPerTick && opIndex < (int) planFolders.size(); ++n, ++opIndex)
+        {
+            ensureVirtualFolderListFileExists (planFolders[opIndex]);
+            registerVirtualFolder (planFolders[opIndex]);
+        }
+        if (opIndex >= (int) planFolders.size())
+            buildPhaseFolders = false;
+    }
+    else
+    {
+        const int kPerTick = 8;
+        for (int n = 0; n < kPerTick && planLeafIdx < planLeaves.size(); ++n, ++planLeafIdx)
+        {
+            if (!appendSongsToLeaf (planLeaves[planLeafIdx].first, planLeaves[planLeafIdx].second))
+                ++cntErrors;
+        }
+        if (planLeafIdx >= planLeaves.size()) { buildFinish(); return; }
+    }
+
+    int done = buildPhaseFolders ? opIndex : (int) (planFolders.size() + planLeafIdx);
+    uiUpdateStatus (L"Building… " + std::to_wstring (done) + L" / " + std::to_wstring (opTotal));
+}
+
+void TigerFoldersPlugin::buildFinish()
+{
+    KillTimer (hDlg, TIMER_OP);
+    bool cancelled = opCancel;
+    op = Op::None;
+
+    saveSettings();
+
+    std::wstring msg;
+    if (cancelled)
+        msg = L"Build cancelled";
+    else
+        msg = L"Built " + std::to_wstring (cntFolders) + L" folders · filed "
+            + std::to_wstring (cntFiled) + L" songs";
+    if (cntUnfiled > 0)
+        msg += L"  ·  " + std::to_wstring (cntUnfiled) + L" at root";
+    if (cntErrors > 0)
+        msg += L"  ·  " + std::to_wstring (cntErrors) + L" write errors";
+
+    uiSetOpRunning (false);
+    uiUpdateStatus (msg, cntErrors > 0);
 }

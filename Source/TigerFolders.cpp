@@ -206,11 +206,13 @@ TigerFoldersPlugin::TigerFoldersPlugin()
     fontNormal = createFont (FONT_NORMAL);
     fontBold   = createFont (FONT_NORMAL, FW_BOLD);
     fontSmall  = createFont (FONT_SMALL);
+    fontHeader = createFont (FONT_HEADER, FW_SEMIBOLD);
     fontTitle  = createFont (FONT_BRAND, FW_BOLD);
 
     if (!fontNormal) fontNormal = (HFONT) GetStockObject (DEFAULT_GUI_FONT);
     if (!fontBold)   fontBold   = (HFONT) GetStockObject (DEFAULT_GUI_FONT);
     if (!fontSmall)  fontSmall  = (HFONT) GetStockObject (DEFAULT_GUI_FONT);
+    if (!fontHeader) fontHeader = fontBold;
     if (!fontTitle)  fontTitle  = (HFONT) GetStockObject (DEFAULT_GUI_FONT);
 
     inputBrush = CreateSolidBrush (TCol::inputBg);
@@ -226,6 +228,7 @@ TigerFoldersPlugin::~TigerFoldersPlugin()
     if (fontNormal) DeleteObject (fontNormal);
     if (fontBold)   DeleteObject (fontBold);
     if (fontSmall)  DeleteObject (fontSmall);
+    if (fontHeader && fontHeader != fontBold) DeleteObject (fontHeader);
     if (fontTitle)  DeleteObject (fontTitle);
     if (inputBrush) DeleteObject (inputBrush);
 }

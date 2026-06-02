@@ -166,3 +166,13 @@ std::wstring TigerFoldersPlugin::buildPathFor (const ScannedSong& s) const
     }
     return path;
 }
+
+// A song is "unfiled" when no component produced a segment — it lands directly
+// in the root folder rather than a subfolder.
+bool TigerFoldersPlugin::isUnfiled (const ScannedSong& s) const
+{
+    for (const auto& c : components)
+        if (!segmentFor (c, s).empty())
+            return false;
+    return true;
+}

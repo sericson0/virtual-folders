@@ -1,6 +1,8 @@
 //==============================================================================
 // TigerFolders - Scan
-// Recursively read the selected browser folder's song tags, build preview tree
+// Chunked, timer-driven scan of the selected browser folder + subfolders so the
+// UI thread never blocks. One browser row per tick gives VDJ's async scroll the
+// settle time it needs (the gap until the next tick) before reading tags.
 //==============================================================================
 
 #include "TigerFolders.h"
@@ -19,56 +21,124 @@ static void deriveBandleaderSinger (ScannedSong& s)
         s.bandleader = trimWs (s.artist.substr (0, dash));
         s.singer     = trimWs (s.artist.substr (dash + 3));
     }
-
     s.instrumental = wiEqual (s.singer, L"Instrumental");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Scan the currently selected VDJ browser folder + all subfolders
-// ─────────────────────────────────────────────────────────────────────────────
-
-void TigerFoldersPlugin::scanSelectedFolder()
+static std::string escapeArg (const std::wstring& s)
 {
-    songs.clear();
-
-    selectedFolderPath = vdjGetString ("get_browsed_folder_path");
-
-    // Flatten the selected folder + subfolders into the song list, then focus
-    // the song zone so get_browsed_song reads file rows.
-    vdjSend ("recurse_folder");
-    vdjSend ("browser_window 'songs'");
-
-    int count = (int) vdjGetValue ("file_count");
-    if (count <= 0)
-        return;
-    if (count > 100000) count = 100000;   // safety cap
-
-    vdjSend ("browser_scroll 'top'");
-
-    for (int i = 0; i < count; ++i)
-    {
-        ScannedSong s;
-        s.filePath = vdjGetString ("get_browsed_filepath");
-        s.title    = vdjGetString ("get_browsed_song 'title'");
-        s.artist   = vdjGetString ("get_browsed_song 'artist'");
-        s.genre    = vdjGetString ("get_browsed_song 'genre'");
-        s.grouping = vdjGetString ("get_browsed_song 'grouping'");
-        s.label    = vdjGetString ("get_browsed_song 'label'");
-        s.album    = vdjGetString ("get_browsed_song 'album'");
-        s.year     = vdjGetString ("get_browsed_song 'year'");
-
-        if (!s.filePath.empty())
-        {
-            deriveBandleaderSinger (s);
-            songs.push_back (std::move (s));
-        }
-
-        vdjSend ("browser_scroll +1");
-    }
+    std::string u = toUtf8 (s), out;
+    for (char c : u) { if (c == '"') out += "\\\""; else out += c; }
+    return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Build the preview tree (counts per node), flattened for owner-draw display
+//  Begin / Step / Finish
+// ─────────────────────────────────────────────────────────────────────────────
+
+void TigerFoldersPlugin::scanBegin()
+{
+    if (op != Op::None) return;
+
+    songs.clear();
+    cntUnfiled = 0;
+
+    preScanFolder = vdjGetString ("get_browsed_folder_path");
+    selectedFolderPath = preScanFolder;
+
+    // Flatten selected folder + subfolders into the song list, focus the song
+    // zone, and park at the top.
+    vdjSend ("recurse_folder");
+    vdjSend ("browser_window 'songs'");
+
+    opTotal = (int) vdjGetValue ("file_count");
+    if (opTotal <= 0)
+    {
+        uiUpdateStatus (L"No songs found — select a folder with audio in VirtualDJ", true);
+        // Restore the browser view we disturbed.
+        if (!preScanFolder.empty())
+            vdjSend ("browser_gotofolder \"" + escapeArg (preScanFolder) + "\"");
+        vdjSend ("browser_window 'folders'");
+        return;
+    }
+    if (opTotal > 200000) opTotal = 200000;
+
+    vdjSend ("browser_scroll 'top'");
+
+    op       = Op::Scanning;
+    opIndex  = 0;
+    opCancel = false;
+
+    uiSetOpRunning (true);
+    uiUpdateStatus (L"Scanning… 0 / " + std::to_wstring (opTotal));
+    SetTimer (hDlg, TIMER_OP, 1, nullptr);
+}
+
+void TigerFoldersPlugin::scanStep()
+{
+    if (opCancel || opIndex >= opTotal)
+    {
+        scanFinish();
+        return;
+    }
+
+    ScannedSong s;
+    s.filePath = vdjGetString ("get_browsed_filepath");
+    s.title    = vdjGetString ("get_browsed_song 'title'");
+    s.artist   = vdjGetString ("get_browsed_song 'artist'");
+    s.genre    = vdjGetString ("get_browsed_song 'genre'");
+    s.grouping = vdjGetString ("get_browsed_song 'grouping'");
+    s.label    = vdjGetString ("get_browsed_song 'label'");
+    s.album    = vdjGetString ("get_browsed_song 'album'");
+    s.year     = vdjGetString ("get_browsed_song 'year'");
+
+    if (!s.filePath.empty())
+    {
+        deriveBandleaderSinger (s);
+        songs.push_back (std::move (s));
+    }
+
+    vdjSend ("browser_scroll +1");
+    ++opIndex;
+
+    if ((opIndex % 25) == 0 || opIndex == opTotal)
+        uiUpdateStatus (L"Scanning… " + std::to_wstring (opIndex) + L" / "
+                        + std::to_wstring (opTotal));
+}
+
+void TigerFoldersPlugin::scanFinish()
+{
+    KillTimer (hDlg, TIMER_OP);
+    bool cancelled = opCancel;
+    op = Op::None;
+
+    // Restore the user's browser view (un-recurse, back to the folder zone).
+    if (!preScanFolder.empty())
+        vdjSend ("browser_gotofolder \"" + escapeArg (preScanFolder) + "\"");
+    vdjSend ("browser_window 'folders'");
+    vdjSend ("browser_scroll 'top'");
+
+    cntUnfiled = 0;
+    for (const auto& s : songs)
+        if (isUnfiled (s)) ++cntUnfiled;
+
+    rebuildPreview();
+    uiRefreshPreviewList();
+
+    std::wstring msg;
+    if (cancelled)
+        msg = L"Scan cancelled — " + std::to_wstring (songs.size()) + L" songs read";
+    else
+        msg = L"Scanned " + std::to_wstring (songs.size()) + L" songs → "
+            + std::to_wstring (previewFolderCount) + L" folders";
+    if (cntUnfiled > 0)
+        msg += L"  ·  " + std::to_wstring (cntUnfiled) + L" land at root (no matching tags)";
+
+    uiSetOpRunning (false);
+    uiUpdateStatus (msg, false);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Preview tree (counts per node), flattened for owner-draw display
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace
@@ -114,11 +184,7 @@ void TigerFoldersPlugin::rebuildPreview()
             size_t slash = path.find (L'/', start);
             std::wstring part = (slash == std::wstring::npos)
                 ? path.substr (start) : path.substr (start, slash - start);
-            if (!part.empty())
-            {
-                cur = &cur->children[part];
-                cur->count++;
-            }
+            if (!part.empty()) { cur = &cur->children[part]; cur->count++; }
             if (slash == std::wstring::npos) break;
             start = slash + 1;
         }

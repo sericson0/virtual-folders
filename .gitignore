@@ -1,0 +1,18 @@
+# Build output
+/build/
+*.dll
+*.exp
+*.lib
+*.pdb
+*.obj
+
+# Visual companion scratch
+.superpowers/
+
+# VDJ test artifacts
+*_settings.ini
+
+# OS / editor
+Thumbs.db
+.vs/
+.vscode/

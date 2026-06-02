@@ -684,7 +684,9 @@ LRESULT CALLBACK FoldersWndProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_CTLCOLORLISTBOX:
         {
             HDC dc = (HDC) wParam;
+            SetTextColor (dc, TCol::textBright);
             SetBkColor (dc, TCol::panel);
+            SetDCBrushColor (dc, TCol::panel);
             return (LRESULT) GetStockObject (DC_BRUSH);
         }
 

@@ -46,9 +46,11 @@ target_compile_definitions(TigerFolders PRIVATE
 
 target_compile_features(TigerFolders PRIVATE cxx_std_17)
 
-# Force-include shlobj.h before all sources so shell path APIs resolve
-# under WIN32_LEAN_AND_MEAN.
-target_compile_options(TigerFolders PRIVATE /FIshlobj.h)
+# /utf-8 : treat source (and execution charset) as UTF-8 so wide-string
+#          literals with em-dashes / arrows / symbols decode correctly.
+# /FIshlobj.h : force-include before all sources so shell path APIs resolve
+#          under WIN32_LEAN_AND_MEAN.
+target_compile_options(TigerFolders PRIVATE /utf-8 /FIshlobj.h)
 
 target_include_directories(TigerFolders PRIVATE "${CMAKE_SOURCE_DIR}/Source")
 
@@ -60,13 +62,14 @@ target_link_libraries(TigerFolders PRIVATE
     uxtheme
 )
 
-# Best-effort copy of the built DLL into the VDJ plugin folder. Fails silently
-# (|| (exit 0)) when VirtualDJ is not installed — the DLL still builds.
+# Best-effort copy of the built DLL into the VDJ plugin folder. Wrapped so the
+# build never fails when VirtualDJ is absent OR currently has the DLL locked
+# (i.e. the plugin is open) — `& exit /b 0` swallows the error either way.
 set(VDJ_PLUGIN_DIR "$ENV{LOCALAPPDATA}/VirtualDJ/Plugins64/SoundEffect/TigerFolders")
 add_custom_command(TARGET TigerFolders POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${VDJ_PLUGIN_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:TigerFolders>" "${VDJ_PLUGIN_DIR}/TigerFolders.dll"
-    COMMENT "Copying TigerFolders.dll to VirtualDJ plugin folder (skipped if VDJ absent)"
-    VERBATIM
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=$<TARGET_FILE:TigerFolders>
+            -DDEST_DIR=${VDJ_PLUGIN_DIR}
+            -P "${CMAKE_SOURCE_DIR}/cmake/install_dll.cmake"
+    COMMENT "Copying TigerFolders.dll to VirtualDJ plugin folder (skipped if VDJ absent/locked)"
 )

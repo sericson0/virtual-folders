@@ -104,9 +104,14 @@ enum CtrlId
     IDC_BTN_SETTINGS  = 3112,
 };
 
-inline constexpr UINT_PTR TIMER_OP        = 1;   // drives chunked scan/build
+inline constexpr UINT_PTR TIMER_OP        = 1;   // drives the chunked build phase
 inline constexpr UINT_PTR TIMER_KEEPALIVE = 2;   // re-asserts the window on top
 inline constexpr UINT_PTR TIMER_SETTLE    = 3;   // waits for recurse_folder to populate
+
+// The scan advances by posting this to itself rather than via WM_TIMER. WM_TIMER
+// is coalesced and floored to ~10-15ms, which capped the scan at ~1k rows/sec
+// regardless of read speed; a self-posted message runs as fast as rows can be read.
+inline constexpr UINT WM_APP_SCANSTEP = WM_APP + 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Layout constants
@@ -123,7 +128,7 @@ inline constexpr int PREV_ITEM_H = 20;
 inline constexpr int LEFT_COL_PCT = 52;
 
 inline constexpr int FONT_NORMAL = 13;
-inline constexpr int FONT_SMALL  = 11;
+inline constexpr int FONT_SMALL  = 12;
 inline constexpr int FONT_HEADER = 14;
 inline constexpr int FONT_BRAND  = 16;
 
@@ -233,6 +238,7 @@ public:
     int  scanLastCount    = -1;
     int  scanStableCount  = 0;
     bool mmPeriodSet      = false;   // raised the system timer resolution for the scan
+    DWORD lastStatusTick  = 0;       // throttles scan-progress repaints to ~20/sec
 
     // Build plan (computed by buildPlan)
     std::vector<std::wstring> planFolders;   // unique folder paths, parent-first

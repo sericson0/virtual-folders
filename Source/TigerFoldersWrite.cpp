@@ -317,14 +317,14 @@ void TigerFoldersPlugin::buildBegin (bool wipeFirst)
     fs::path root;
     if (!resolveMyListsRoot (root))
     {
-        uiUpdateStatus (L"VirtualDJ MyLists folder not found — cannot build", true);
+        uiUpdateStatus (L"VirtualDJ MyLists folder not found", true);
         return;
     }
 
     buildPlan();
     if (planFolders.empty())
     {
-        uiUpdateStatus (L"Nothing to build — scan a folder and add components", true);
+        uiUpdateStatus (L"Nothing to build · scan a folder and add components", true);
         return;
     }
 
@@ -338,7 +338,7 @@ void TigerFoldersPlugin::buildBegin (bool wipeFirst)
     opTotal          = (int) (planFolders.size() + planLeaves.size());
 
     uiSetOpRunning (true);
-    uiUpdateStatus (L"Building… 0 / " + std::to_wstring (opTotal));
+    uiUpdateStatus (L"Building… 0/" + std::to_wstring (opTotal));
     SetTimer (hDlg, TIMER_OP, 1, nullptr);
 }
 
@@ -369,7 +369,7 @@ void TigerFoldersPlugin::buildStep()
     }
 
     int done = buildPhaseFolders ? opIndex : (int) (planFolders.size() + planLeafIdx);
-    uiUpdateStatus (L"Building… " + std::to_wstring (done) + L" / " + std::to_wstring (opTotal));
+    uiUpdateStatus (L"Building… " + std::to_wstring (done) + L"/" + std::to_wstring (opTotal));
 }
 
 void TigerFoldersPlugin::buildFinish()
@@ -387,9 +387,9 @@ void TigerFoldersPlugin::buildFinish()
         msg = L"Built " + std::to_wstring (cntFolders) + L" folders · filed "
             + std::to_wstring (cntFiled) + L" songs";
     if (cntUnfiled > 0)
-        msg += L"  ·  " + std::to_wstring (cntUnfiled) + L" at root";
+        msg += L" · " + std::to_wstring (cntUnfiled) + L" at root";
     if (cntErrors > 0)
-        msg += L"  ·  " + std::to_wstring (cntErrors) + L" write errors";
+        msg += L" · " + std::to_wstring (cntErrors) + L" write errors";
 
     uiSetOpRunning (false);
     uiUpdateStatus (msg, cntErrors > 0);

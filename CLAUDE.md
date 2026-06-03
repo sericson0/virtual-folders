@@ -28,7 +28,7 @@ songs under the selected browser folder.
 | `TigerFolders.h` | Plugin class, `Component`/`ScannedSong`/`PreviewRow` structs, enums, `CtrlId`, layout constants |
 | `TigerFolders.cpp` | Lifecycle (`OnLoad`/`OnGetUserInterface`/`Release`), VDJ wrappers, settings INI, component (de)serialization, `DllGetClassObject` |
 | `TigerFoldersPath.cpp` | `segmentFor` / `buildPathFor` — name formats, year buckets, genre rhythm-normalize, grouping instrumental scope |
-| `TigerFoldersScan.cpp` | `scanBegin` (deterministic recurse_folder), `scanSettleStep` (wait for async flatten), `scanStep` (browser_scroll loop), `rebuildPreview` (tree + counts) |
+| `TigerFoldersScan.cpp` | `scanBegin` (deterministic recurse_folder), `scanSettleStep` (wait for async flatten), `scanStep` (browser_scroll loop, self-driven via `WM_APP_SCANSTEP` — not WM_TIMER — to beat the ~15ms tick floor; progress repaints throttled to ~20/sec), `rebuildPreview` (tree + counts) |
 | `TigerFoldersWrite.cpp` | Virtual-folder engine adapted from tigertag-vst: create `.vdjfolder`/`.subfolders`/`order`, append song refs, `add_virtualfolder`; plus `managedRootExists`/`removeManagedRoot` for Rebuild |
 | `TigerFoldersUI.cpp` | `FoldersWndProc`, two-column owner-drawn UI, add-component row, draggable component list (subclassed), preview tree |
 | `TigerFoldersHelpers.h/.cpp` | `TCol` colors, UTF/string utils, person-name parsing, GDI helpers, MyLists root discovery |

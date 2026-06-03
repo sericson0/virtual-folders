@@ -87,7 +87,7 @@ static Layout computeLayout (HWND hwnd)
 
     L.addLabel  = { lx, y, lr, y + 16 }; y += 20;
     L.comboField = { lx, y, lx + 124, y + ROW_H };
-    L.comboMode  = { lx + 130, y, lx + 130 + 156, y + ROW_H };
+    L.comboMode  = { lx + 130, y, lr - 72, y + ROW_H };   // flex; even 6px gap before ADD
     L.btnAdd     = { lr - 66, y, lr, y + ROW_H };
     y += ROW_H + 10;
 
@@ -204,26 +204,24 @@ void TigerFoldersPlugin::uiRepopulateModeCombo()
         {
             case Field::Bandleader:
             case Field::Singer:
-                modeTipText = L"Name format.  [YY] Last → 41-43 Fiorentino   ·   "
-                              L"[YYYY] Last → 1941-1943 Fiorentino   (prepends the min–max "
-                              L"recording year within the parent folder).";
+                modeTipText = L"Name format. [YY] = 41-43 Fiorentino, [YYYY] = 1941-1943 "
+                              L"Fiorentino (year range prefixed from the parent folder).";
                 break;
             case Field::VocalSplit:
-                modeTipText = L"Splits into 'Instrumentals' and 'Singers' folders. This style "
-                              L"names the Singers subfolders, e.g. Singers/Fiorentino or "
-                              L"Singers/41-43 Fiorentino with a [YY] style.";
+                modeTipText = L"Splits into Instrumentals and Singers folders. Names the "
+                              L"Singers subfolders, e.g. Singers/Fiorentino or "
+                              L"Singers/41-43 Fiorentino ([YY]).";
                 break;
             case Field::Genre:
-                modeTipText = L"Exact = use the genre tag as-is.  Normalize = collapse to "
+                modeTipText = L"Exact = genre tag as-is. Normalize = "
                               L"Tango / Vals / Milonga / Cortina / Other.";
                 break;
             case Field::Grouping:
-                modeTipText = L"All = every track.  Instrumental only = create this level "
-                              L"for instrumental tracks only.";
+                modeTipText = L"All = every track. Instrumental only = this level applies "
+                              L"to instrumentals.";
                 break;
             case Field::Year:
-                modeTipText = L"Bucket width for the year folder.  Instrumental only = apply "
-                              L"to instrumental tracks only.";
+                modeTipText = L"Year bucket width. Instrumental only = applies to instrumentals.";
                 break;
             default:
                 modeTipText.clear();
@@ -315,6 +313,8 @@ void TigerFoldersPlugin::uiRefreshComponentList()
     for (size_t i = 0; i < components.size(); ++i)
         SendMessageW (hListComponents, LB_ADDSTRING, 0, (LPARAM) L"");
     SendMessageW (hListComponents, LB_SETTOPINDEX, top, 0);
+    // The list hides when empty (so a placeholder can show); reveal it once filled.
+    ShowWindow (hListComponents, components.empty() ? SW_HIDE : SW_SHOW);
     InvalidateRect (hListComponents, nullptr, FALSE);
     if (hDlg) InvalidateRect (hDlg, nullptr, FALSE);
 }
@@ -325,6 +325,9 @@ void TigerFoldersPlugin::uiRefreshPreviewList()
     SendMessageW (hListPreview, LB_RESETCONTENT, 0, 0);
     for (size_t i = 0; i < previewRows.size(); ++i)
         SendMessageW (hListPreview, LB_ADDSTRING, 0, (LPARAM) L"");
+    // scanFinish populates rows without going through applyLayout/applyVisibility,
+    // so the preview list must reveal itself here or it stays hidden after a scan.
+    ShowWindow (hListPreview, previewRows.empty() ? SW_HIDE : SW_SHOW);
     InvalidateRect (hListPreview, nullptr, FALSE);
     if (hDlg) InvalidateRect (hDlg, nullptr, FALSE);
 }
@@ -516,7 +519,7 @@ static LRESULT CALLBACK comboSubclass (HWND hwnd, UINT msg, WPARAM wParam, LPARA
         RECT ar { rc.right - aw, rc.top, rc.right, rc.bottom };
         HDC dc = GetDC (hwnd);
         fillRect (dc, ar, TCol::inputBg);
-        drawText (dc, ar, L"▾", TCol::accentBrt, p->fontSmall,
+        drawText (dc, ar, L"▾", TCol::textNormal, p->fontSmall,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         ReleaseDC (hwnd, dc);
     }
@@ -569,27 +572,26 @@ static void drawButton (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     // Button labels are uppercased.
     std::wstring label = toUpperW (text);
 
-    // ADD and Build are "primary" but only subtly so: a dark body with an accent
-    // outline + accent text, rather than a loud accent fill. Scan & Preview is
-    // neutral and turns into a red "Cancel" ghost while an op runs.
-    bool primary = (id == IDC_BTN_ADD || id == IDC_BTN_BUILD);
-    bool cancel  = (id == IDC_BTN_SCAN && p->op != Op::None);
+    // Uniform gray buttons: "active" = simply not grayed out; hover = a lighter
+    // gray; pressed = lighter still. The only exception is Scan→Cancel while an op
+    // runs, which keeps a red danger tint so it reads as a stop action.
+    bool cancel = (id == IDC_BTN_SCAN && p->op != Op::None);
 
-    // Base colors per role (hover lightens the base by a small amount).
     COLORREF bg, border, tc;
-    if (disabled)     { bg = TCol::buttonDisabled; border = TCol::cardBorder; tc = TCol::textDim; }
-    else if (cancel)  { bg = RGB (70, 28, 28);     border = RGB (150, 70, 70); tc = RGB (240, 150, 150); }
-    else if (primary) { bg = TCol::buttonBg;       border = TCol::accent;      tc = TCol::accentBrt; }
-    else              { bg = TCol::buttonBg;        border = TCol::cardBorder;  tc = TCol::textBright; }
-
-    if (pressed && !disabled)
-        bg = cancel ? RGB (150, 50, 50) : TCol::buttonHover;
-    else if (hover)
+    if (disabled)
     {
-        BYTE r = (BYTE) (GetRValue (bg) + 12 > 255 ? 255 : GetRValue (bg) + 12);
-        BYTE g = (BYTE) (GetGValue (bg) + 12 > 255 ? 255 : GetGValue (bg) + 12);
-        BYTE b = (BYTE) (GetBValue (bg) + 12 > 255 ? 255 : GetBValue (bg) + 12);
-        bg = RGB (r, g, b);
+        bg = TCol::buttonDisabled; border = TCol::cardBorder; tc = TCol::textDim;
+    }
+    else if (cancel)
+    {
+        bg = pressed ? RGB (120, 44, 44) : hover ? RGB (96, 44, 44) : RGB (70, 28, 28);
+        border = RGB (150, 70, 70); tc = RGB (240, 150, 150);
+    }
+    else
+    {
+        bg = pressed ? TCol::selSubtle : hover ? TCol::buttonHover : TCol::buttonBg;
+        border = hover ? TCol::inputBorder : TCol::cardBorder;
+        tc = TCol::textBright;
     }
 
     // Paint the corners with the surrounding column color so the rounded edges
@@ -610,7 +612,7 @@ static void drawButton (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     SelectObject (hdc, oldBr);
     DeleteObject (pen);
 
-    drawText (hdc, rc, label, tc, primary ? p->fontBold : p->fontNormal,
+    drawText (hdc, rc, label, tc, p->fontNormal,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -658,7 +660,7 @@ static void drawComponentItem (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     int indent  = idx * 16;
     int branchX = rc.left + 24 + indent;
     RECT branch = { branchX, rc.top, branchX + 16, rc.bottom };
-    drawText (hdc, branch, L"└", TCol::accent, p->fontNormal, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText (hdc, branch, L"└", TCol::textDim, p->fontNormal, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     RECT tr = { branchX + 16, rc.top, rc.right - 8, rc.bottom };
     std::wstring line = fieldLabel (c.field) + L"  ·  " + componentModeLabel (c);
@@ -706,7 +708,7 @@ static void drawPreviewItem (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     std::wstring name = (row.isLeaf ? L"• " : L"") + row.name;
     COLORREF nameCol = dim ? TCol::textDim
                      : row.isLeaf ? TCol::textNormal : TCol::textBright;
-    drawText (hdc, tr, name, nameCol, p->fontSmall,
+    drawText (hdc, tr, name, nameCol, p->fontNormal,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     RECT cnt = { rc.right - 46, rc.top, rc.right - 6, rc.bottom };
@@ -746,13 +748,13 @@ static void paintWindow (HWND hwnd, TigerFoldersPlugin* p)
 
         drawText (mem, L.addLabel, L"ADD COMPONENT", TCol::accentBrt, p->fontHeader,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        drawText (mem, L.compLabel, L"STRUCTURE  (root → leaf · drag to reorder · double-click to edit)",
-                  TCol::textNormal, p->fontSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawText (mem, L.compLabel, L"STRUCTURE", TCol::accentBrt, p->fontHeader,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         // Component-list frame + empty hint
         frameRect (mem, L.compList, TCol::cardBorder);
         if (p->components.empty())
-            drawText (mem, L.compList, L"No components yet — pick a field above and click ADD →",
+            drawText (mem, L.compList, L"Pick a field above and click ADD →",
                       TCol::textDim, p->fontSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         drawText (mem, L.rootLabel, L"ROOT", TCol::textNormal, p->fontNormal,
@@ -786,7 +788,7 @@ static void paintWindow (HWND hwnd, TigerFoldersPlugin* p)
         // Right-column header + preview placeholder
         std::wstring head = L"PREVIEW";
         if (!p->songs.empty())
-            head += L"  —  " + std::to_wstring (p->songs.size()) + L" songs → "
+            head += L"  ·  " + std::to_wstring (p->songs.size()) + L" songs → "
                   + std::to_wstring (p->previewFolderCount) + L" folders";
         drawText (mem, L.prevLabel, head, TCol::accentBrt, p->fontHeader,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -984,11 +986,14 @@ LRESULT CALLBACK FoldersWndProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg)
     {
+        case WM_APP_SCANSTEP:
+            if (p->op == Op::Scanning && !p->scanSettling) p->scanStep();
+            return 0;
+
         case WM_TIMER:
             if (wParam == TIMER_OP)
             {
-                if (p->op == Op::Scanning) p->scanStep();
-                else if (p->op == Op::Building) p->buildStep();
+                if (p->op == Op::Building) p->buildStep();
             }
             else if (wParam == TIMER_SETTLE)
             {

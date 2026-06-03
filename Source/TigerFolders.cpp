@@ -90,7 +90,7 @@ std::wstring componentModeLabel (const Component& c)
         case Field::VocalSplit:
             return L"Singers → " + nameModeLabel (c.nameMode);
         default:
-            return L"exact";
+            return L"Exact";
     }
 }
 

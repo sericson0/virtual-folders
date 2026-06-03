@@ -71,7 +71,7 @@ void TigerFoldersPlugin::scanBegin()
     scanStableCount = 0;
 
     uiSetOpRunning (true);
-    uiUpdateStatus (L"Preparing… reading folder + subfolders");
+    uiUpdateStatus (L"Preparing…");
     SetTimer (hDlg, TIMER_SETTLE, 50, nullptr);
 }
 
@@ -100,7 +100,7 @@ void TigerFoldersPlugin::scanSettleStep()
     if (opTotal <= 0)
     {
         op = Op::None;
-        uiUpdateStatus (L"No songs found — select a folder with audio in VirtualDJ", true);
+        uiUpdateStatus (L"No songs found · select a folder with audio", true);
         // Restore the browser view we disturbed.
         if (!preScanFolder.empty())
             vdjSend ("browser_gotofolder \"" + escapeArg (preScanFolder) + "\"");
@@ -115,8 +115,9 @@ void TigerFoldersPlugin::scanSettleStep()
     // Raise the system timer resolution so the per-row Sleep(1) settle is honored
     // at ~1ms instead of the default ~15ms; paired with timeEndPeriod in scanFinish.
     if (!mmPeriodSet && timeBeginPeriod (1) == TIMERR_NOERROR) mmPeriodSet = true;
-    uiUpdateStatus (L"Scanning… 0 / " + std::to_wstring (opTotal));
-    SetTimer (hDlg, TIMER_OP, 1, nullptr);
+    lastStatusTick = 0;
+    uiUpdateStatus (L"Scanning… 0/" + std::to_wstring (opTotal));
+    PostMessageW (hDlg, WM_APP_SCANSTEP, 0, 0);
 }
 
 void TigerFoldersPlugin::scanStep()
@@ -139,20 +140,15 @@ void TigerFoldersPlugin::scanStep()
         s.year     = vdjGetString ("get_browsed_song 'year'");
     };
 
-    // Process a batch per tick rather than a single row. WM_TIMER can't fire
-    // faster than ~15ms, so one-row-per-tick caps throughput at ~60 songs/sec;
-    // batching lifts that ceiling and the adaptive settle below keeps reads valid.
+    // Process a batch, then self-post WM_APP_SCANSTEP for the next batch (see the
+    // header note: this bypasses the ~15ms WM_TIMER floor). The per-row settle
+    // below already guarantees the browsed row has changed before the next read,
+    // so no extra mid-read verification read is needed.
     const int kBatch = 16;
     for (int n = 0; n < kBatch && opIndex < opTotal && !opCancel; ++n, ++opIndex)
     {
         ScannedSong s;
         readRow (s);
-
-        // If a late-landing scroll shifted the row mid-read, the first reads were
-        // a blend of two rows — re-read now that it has settled.
-        std::wstring fpCheck = vdjGetString ("get_browsed_filepath");
-        if (!fpCheck.empty() && fpCheck != s.filePath)
-            readRow (s);
 
         if (!s.filePath.empty())
         {
@@ -174,8 +170,30 @@ void TigerFoldersPlugin::scanStep()
         }
     }
 
-    uiUpdateStatus (L"Scanning… " + std::to_wstring (opIndex) + L" / "
-                    + std::to_wstring (opTotal));
+    // Throttle progress repaints to ~20/sec and force them (WM_PAINT is low
+    // priority and would otherwise be starved by the self-posted step messages).
+    DWORD now = GetTickCount();
+    if (opCancel || opIndex >= opTotal || now - lastStatusTick >= 50)
+    {
+        lastStatusTick = now;
+        uiUpdateStatus (L"Scanning… " + std::to_wstring (opIndex) + L"/"
+                        + std::to_wstring (opTotal));
+        if (hDlg) UpdateWindow (hDlg);
+    }
+
+    // Drain pending input before reposting. Posted messages outrank hardware
+    // input in GetMessage, so a continuously self-posted WM_APP_SCANSTEP would
+    // starve the Cancel click that sets opCancel — pump it here so Cancel works.
+    MSG m;
+    while (PeekMessageW (&m, nullptr, 0, 0, PM_REMOVE))
+    {
+        if (m.message == WM_APP_SCANSTEP) continue;   // never re-enter ourselves
+        TranslateMessage (&m);
+        DispatchMessageW (&m);
+    }
+
+    if (opCancel || opIndex >= opTotal) scanFinish();
+    else                                PostMessageW (hDlg, WM_APP_SCANSTEP, 0, 0);
 }
 
 void TigerFoldersPlugin::scanFinish()
@@ -200,12 +218,12 @@ void TigerFoldersPlugin::scanFinish()
 
     std::wstring msg;
     if (cancelled)
-        msg = L"Scan cancelled — " + std::to_wstring (songs.size()) + L" songs read";
+        msg = L"Scan cancelled · " + std::to_wstring (songs.size()) + L" songs read";
     else
         msg = L"Scanned " + std::to_wstring (songs.size()) + L" songs → "
             + std::to_wstring (previewFolderCount) + L" folders";
     if (cntUnfiled > 0)
-        msg += L"  ·  " + std::to_wstring (cntUnfiled) + L" land at root (no matching tags)";
+        msg += L" · " + std::to_wstring (cntUnfiled) + L" at root (no matching tags)";
 
     uiSetOpRunning (false);
     uiUpdateStatus (msg, false);

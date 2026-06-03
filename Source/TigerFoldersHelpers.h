@@ -30,6 +30,7 @@ namespace TCol
     inline const COLORREF buttonHover = RGB(40,  44,  62);
     inline const COLORREF buttonDisabled = RGB(24,  28,  42);
     inline const COLORREF inputBg     = RGB(15,  18,  27);
+    inline const COLORREF inputBorder = RGB(90,  96,  112);   // gray outline for input boxes
     inline const COLORREF good        = RGB(76,  175, 80);
     inline const COLORREF selSubtle   = RGB(34,  38,  54);
 }

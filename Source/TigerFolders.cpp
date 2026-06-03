@@ -15,13 +15,15 @@ bool fieldHasSubmode (Field f)
 {
     switch (f)
     {
+        case Field::Genre:        // Exact / Normalize (Tango/Vals/Milonga/Cortina/Other)
         case Field::Bandleader:
         case Field::Singer:
         case Field::Grouping:
         case Field::Year:
+        case Field::VocalSplit:   // singer name style for the Singers branch
             return true;
         default:
-            return false;   // Genre, Label, Album
+            return false;   // Label, Album
     }
 }
 
@@ -36,6 +38,7 @@ std::wstring fieldLabel (Field f)
         case Field::Label:      return L"Label";
         case Field::Year:       return L"Year";
         case Field::Album:      return L"Album";
+        case Field::VocalSplit: return L"Singer/Inst";
     }
     return L"";
 }
@@ -49,6 +52,8 @@ static std::wstring nameModeLabel (NameMode m)
         case NameMode::Last:           return L"Last";
         case NameMode::LastUpper:      return L"LAST";
         case NameMode::LastUpperFirst: return L"LAST, First";
+        case NameMode::YearRangeShort: return L"[YY] Last";
+        case NameMode::YearRangeLong:  return L"[YYYY] Last";
     }
     return L"";
 }
@@ -64,21 +69,26 @@ static std::wstring yearModeLabel (YearMode m)
     return L"";
 }
 
+static std::wstring yearScopeSuffix (GroupScope sc)
+{
+    return (sc == GroupScope::Instrumental) ? L" · Instrumental only" : L"";
+}
+
 std::wstring componentModeLabel (const Component& c)
 {
     switch (c.field)
     {
+        case Field::Genre:
+            return (c.genreValue == GroupValue::Normalize) ? L"Normalize" : L"Exact";
         case Field::Bandleader:
         case Field::Singer:
             return nameModeLabel (c.nameMode);
         case Field::Grouping:
-        {
-            std::wstring s = (c.groupScope == GroupScope::Instrumental) ? L"Instrumental" : L"All";
-            std::wstring v = (c.groupValue == GroupValue::Normalize) ? L"Normalize" : L"Exact";
-            return s + L" · " + v;
-        }
+            return (c.groupScope == GroupScope::Instrumental) ? L"Instrumental only" : L"All";
         case Field::Year:
-            return yearModeLabel (c.yearMode);
+            return yearModeLabel (c.yearMode) + yearScopeSuffix (c.yearScope);
+        case Field::VocalSplit:
+            return L"Singers → " + nameModeLabel (c.nameMode);
         default:
             return L"exact";
     }
@@ -99,6 +109,7 @@ static std::string fieldCode (Field f)
         case Field::Label:      return "label";
         case Field::Year:       return "year";
         case Field::Album:      return "album";
+        case Field::VocalSplit: return "vocalsplit";
     }
     return "genre";
 }
@@ -112,6 +123,8 @@ static std::string nameModeCode (NameMode m)
         case NameMode::Last:           return "last";
         case NameMode::LastUpper:      return "lastupper";
         case NameMode::LastUpperFirst: return "lastupperfirst";
+        case NameMode::YearRangeShort: return "yyrange";
+        case NameMode::YearRangeLong:  return "yyyyrange";
     }
     return "firstlast";
 }
@@ -121,19 +134,24 @@ static std::string serializeComponent (const Component& c)
     std::string s = fieldCode (c.field);
     switch (c.field)
     {
+        case Field::Genre:
+            s += ":";
+            s += (c.genreValue == GroupValue::Normalize) ? "normalize" : "exact";
+            break;
         case Field::Bandleader:
         case Field::Singer:
+        case Field::VocalSplit:
             s += ":" + nameModeCode (c.nameMode);
             break;
         case Field::Grouping:
             s += ":";
             s += (c.groupScope == GroupScope::Instrumental) ? "inst" : "all";
-            s += ":";
-            s += (c.groupValue == GroupValue::Normalize) ? "normalize" : "exact";
             break;
         case Field::Year:
             s += ":";
             s += (c.yearMode == YearMode::Y2) ? "y2" : (c.yearMode == YearMode::Y5) ? "y5" : "y10";
+            s += ":";
+            s += (c.yearScope == GroupScope::Instrumental) ? "inst" : "all";
             break;
         default:
             break;
@@ -164,9 +182,16 @@ static bool parseComponent (const std::string& tokenIn, Component& out)
     else if (f == "label")      c.field = Field::Label;
     else if (f == "year")       c.field = Field::Year;
     else if (f == "album")      c.field = Field::Album;
+    else if (f == "vocalsplit") c.field = Field::VocalSplit;
     else return false;
 
-    if (c.field == Field::Bandleader || c.field == Field::Singer)
+    if (c.field == Field::Genre)
+    {
+        std::string v = (parts.size() > 1) ? parts[1] : "exact";
+        c.genreValue = (v == "normalize") ? GroupValue::Normalize : GroupValue::Exact;
+    }
+    else if (c.field == Field::Bandleader || c.field == Field::Singer
+             || c.field == Field::VocalSplit)
     {
         std::string m = (parts.size() > 1) ? parts[1] : "firstlast";
         if      (m == "firstlast")      c.nameMode = NameMode::FirstLast;
@@ -174,18 +199,22 @@ static bool parseComponent (const std::string& tokenIn, Component& out)
         else if (m == "last")           c.nameMode = NameMode::Last;
         else if (m == "lastupper")      c.nameMode = NameMode::LastUpper;
         else if (m == "lastupperfirst") c.nameMode = NameMode::LastUpperFirst;
+        else if (m == "yyrange")        c.nameMode = NameMode::YearRangeShort;
+        else if (m == "yyyyrange")      c.nameMode = NameMode::YearRangeLong;
     }
     else if (c.field == Field::Grouping)
     {
+        // Legacy entries may carry a third "normalize"/"exact" token — ignored now.
         std::string scope = (parts.size() > 1) ? parts[1] : "all";
-        std::string val   = (parts.size() > 2) ? parts[2] : "exact";
         c.groupScope = (scope == "inst") ? GroupScope::Instrumental : GroupScope::All;
-        c.groupValue = (val == "normalize") ? GroupValue::Normalize : GroupValue::Exact;
+        c.groupValue = GroupValue::Exact;
     }
     else if (c.field == Field::Year)
     {
         std::string y = (parts.size() > 1) ? parts[1] : "y10";
         c.yearMode = (y == "y2") ? YearMode::Y2 : (y == "y5") ? YearMode::Y5 : YearMode::Y10;
+        std::string sc = (parts.size() > 2) ? parts[2] : "all";
+        c.yearScope = (sc == "inst") ? GroupScope::Instrumental : GroupScope::All;
     }
 
     out = c;
@@ -280,6 +309,8 @@ HRESULT VDJ_API TigerFoldersPlugin::OnGetUserInterface (TVdjPluginInterface8* pl
 {
     if (hDlg && IsWindow (hDlg))
     {
+        dialogRequestedOpen  = true;
+        suppressNextHideSync = false;
         ShowWindow (hDlg, SW_SHOWNOACTIVATE);
         SetWindowPos (hDlg, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         pluginInterface->Type = VDJINTERFACE_DIALOG;
@@ -326,6 +357,8 @@ HRESULT VDJ_API TigerFoldersPlugin::OnParameter (int id)
 {
     if (id == PID_OPEN && hDlg && IsWindow (hDlg))
     {
+        dialogRequestedOpen  = true;
+        suppressNextHideSync = false;
         ShowWindow (hDlg, SW_SHOWNOACTIVATE);
         SetWindowPos (hDlg, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
@@ -383,6 +416,11 @@ void TigerFoldersPlugin::loadSettings()
         {
             rootName = trimWs (toWide (val));
         }
+        else if (key == "excluded")
+        {
+            std::wstring e = trimWs (toWide (val));
+            if (!e.empty()) excludedFolders.insert (e);
+        }
         else if (key == "components")
         {
             haveComponents = true;
@@ -423,6 +461,8 @@ void TigerFoldersPlugin::saveSettings()
             out << serializeComponent (components[i]);
         }
         out << "\n";
+        for (const auto& e : excludedFolders)
+            out << "excluded=" << toUtf8 (e) << "\n";
         out.flush();
         if (!out.good()) { out.close(); std::error_code ec; fs::remove (tmp, ec); return; }
     }

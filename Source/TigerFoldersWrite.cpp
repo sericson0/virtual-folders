@@ -265,12 +265,16 @@ void TigerFoldersPlugin::buildPlan()
     planLeaves.clear();
     cntFolders = cntFiled = cntUnfiled = cntErrors = 0;
 
+    computeSingerYearRanges();
+
     std::set<std::wstring> folderSet;
     std::map<std::wstring, std::vector<std::wstring>> leafMap;
 
     for (const auto& s : songs)
     {
-        std::wstring path = buildPathFor (s);
+        // Honor unchecked folders: a song bound for an excluded folder falls back
+        // to its nearest checked ancestor.
+        std::wstring path = effectivePath (buildPathFor (s));
         if (path.empty()) continue;
 
         // All ancestor prefixes are folders that must exist.

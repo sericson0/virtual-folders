@@ -17,10 +17,13 @@
 //  Component data model
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class Field { Genre, Bandleader, Singer, Grouping, Label, Year, Album };
+enum class Field { Genre, Bandleader, Singer, Grouping, Label, Year, Album, VocalSplit };
 
 // Display format for Bandleader / Singer.
-enum class NameMode { FirstLast, LastFirst, Last, LastUpper, LastUpperFirst };
+//  YearRangeShort / YearRangeLong prepend the min–max recording year of that
+//  person within the parent folder, e.g. "41-43 Fiorentino" / "1941-1943 Fiorentino".
+enum class NameMode { FirstLast, LastFirst, Last, LastUpper, LastUpperFirst,
+                      YearRangeShort, YearRangeLong };
 
 // Grouping scope + value.
 enum class GroupScope { All, Instrumental };
@@ -34,8 +37,10 @@ struct Component
     Field      field      = Field::Genre;
     NameMode   nameMode   = NameMode::FirstLast;   // Bandleader / Singer
     GroupScope groupScope = GroupScope::All;       // Grouping
-    GroupValue groupValue = GroupValue::Exact;     // Grouping
+    GroupValue groupValue = GroupValue::Exact;     // Grouping (legacy; scope-only now)
+    GroupValue genreValue = GroupValue::Exact;     // Genre (Exact / Normalize)
     YearMode   yearMode   = YearMode::Y10;         // Year
+    GroupScope yearScope  = GroupScope::All;       // Year (All / Instrumental-only)
 };
 
 bool         fieldHasSubmode (Field f);
@@ -67,9 +72,12 @@ struct ScannedSong
 struct PreviewRow
 {
     std::wstring name;
+    std::wstring path;        // full folder path from the root (exclusion identity)
     int          depth = 0;
     int          count = 0;   // songs in this node's subtree
     bool         isLeaf = false;
+    bool         excluded = false;          // user unchecked this folder
+    bool         ancestorExcluded = false;  // an ancestor folder is unchecked
 };
 
 // Long-running operation, driven in chunks by a WM_TIMER state machine so the
@@ -96,7 +104,9 @@ enum CtrlId
     IDC_BTN_SETTINGS  = 3112,
 };
 
-inline constexpr UINT_PTR TIMER_OP = 1;   // drives chunked scan/build
+inline constexpr UINT_PTR TIMER_OP        = 1;   // drives chunked scan/build
+inline constexpr UINT_PTR TIMER_KEEPALIVE = 2;   // re-asserts the window on top
+inline constexpr UINT_PTR TIMER_SETTLE    = 3;   // waits for recurse_folder to populate
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Layout constants
@@ -148,11 +158,18 @@ public:
     // Path logic (TigerFoldersPath.cpp)
     std::wstring segmentFor (const Component& c, const ScannedSong& s) const;
     std::wstring buildPathFor (const ScannedSong& s) const;       // root/.../leaf
+    std::wstring effectivePath (const std::wstring& full) const;  // trim at first excluded folder
+    void         computeSingerYearRanges();   // fill singerYearRanges for [YY]/[YYYY] modes
 
     bool isUnfiled (const ScannedSong& s) const;   // path collapses to just the root
 
+    // Preview folder exclusions (checkboxes)
+    void applyExclusionFlags();                 // recompute excluded/ancestorExcluded on rows
+    void togglePreviewExclusion (int rowIdx);   // check/uncheck a preview folder
+
     // Scan — chunked state machine (TigerFoldersScan.cpp)
     void scanBegin();
+    void scanSettleStep();              // wait for recurse_folder to finish flattening
     void scanStep();                    // process one browser row per tick
     void scanFinish();
     void rebuildPreview();              // fills `previewRows` + counts from `songs`
@@ -186,11 +203,16 @@ public:
 
     // ── State ────────────────────────────────────────────────────────────────
     std::vector<Component>   components;
-    std::wstring             rootName = L"Tango";
+    std::wstring             rootName = L"MyLists";
 
     std::vector<ScannedSong> songs;
     std::vector<PreviewRow>  previewRows;
     int                      previewFolderCount = 0;
+    std::set<std::wstring>   excludedFolders;     // full paths of unchecked folders
+
+    // Min–max recording year per "parentPath/baseName" group, for [YY]/[YYYY] name
+    // modes. Rebuilt from `songs` before each preview/build pass.
+    std::map<std::wstring, std::pair<int,int>> singerYearRanges;
 
     std::wstring             selectedFolderPath;   // currently selected VDJ folder
     std::wstring             statusText;
@@ -205,6 +227,13 @@ public:
     bool opCancel = false;
     std::wstring preScanFolder;          // browser folder to restore after scan
 
+    // Scan settle phase (wait for recurse_folder's async flatten to populate)
+    bool scanSettling     = false;
+    int  scanSettleTicks  = 0;
+    int  scanLastCount    = -1;
+    int  scanStableCount  = 0;
+    bool mmPeriodSet      = false;   // raised the system timer resolution for the scan
+
     // Build plan (computed by buildPlan)
     std::vector<std::wstring> planFolders;   // unique folder paths, parent-first
     std::vector<std::pair<std::wstring, std::vector<std::wstring>>> planLeaves;
@@ -218,13 +247,23 @@ public:
     // Pending "add" selection (driven by the two combos)
     Field      pendingField    = Field::Genre;
     NameMode   pendingNameMode = NameMode::FirstLast;
-    GroupScope pendingScope    = GroupScope::All;
-    GroupValue pendingValue    = GroupValue::Exact;
-    YearMode   pendingYearMode = YearMode::Y10;
+    GroupScope pendingScope     = GroupScope::All;
+    GroupValue pendingValue     = GroupValue::Exact;
+    GroupValue pendingGenreValue = GroupValue::Exact;
+    YearMode   pendingYearMode  = YearMode::Y10;
+    GroupScope pendingYearScope = GroupScope::All;
     bool       fieldChosen      = false;   // a primary field has been picked
 
     bool       showSettings     = false;
     int        editingIndex     = -1;    // component being edited in place, or -1
+
+    // Window persistence: keep the dialog floating above VDJ's browser even when
+    // the user clicks folders (which steals Z-order). A 250ms keep-alive timer
+    // re-asserts HWND_TOP while dialogRequestedOpen is set. suppressNextHideSync
+    // swallows the WM_SHOWWINDOW(hide) we trigger ourselves so it doesn't clear
+    // the "open" intent.
+    bool       dialogRequestedOpen  = true;
+    bool       suppressNextHideSync = false;
 
     // Drag-reorder state for the component list
     bool       dragging   = false;
@@ -248,6 +287,8 @@ public:
     HWND hListPreview    = nullptr;
     HWND hBtnClose       = nullptr;
     HWND hBtnSettings    = nullptr;
+    HWND hModeTip        = nullptr;   // tooltip for the mode combo
+    std::wstring modeTipText;         // backing buffer for the tooltip text
 
     // Drag-reorder state for the component list
     int  dragFrom        = -1;

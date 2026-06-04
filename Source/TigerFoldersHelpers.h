@@ -50,6 +50,10 @@ bool wiEqual (const std::wstring& a, const std::wstring& b);
 // Replace characters illegal in a folder name with '_', and trim.
 std::wstring sanitizeSegment (std::wstring v);
 
+// Fold accented Latin letters to their plain ASCII base (á→a, ñ→n, ü→u, …) and
+// drop the Spanish ¿ / ¡ marks. Used by the optional "Normalize Spanish" toggle.
+std::wstring normalizeLatinAccents (const std::wstring& s);
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Person-name helpers (bandleader / singer)
 // ─────────────────────────────────────────────────────────────────────────────

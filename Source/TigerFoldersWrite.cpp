@@ -267,36 +267,49 @@ void TigerFoldersPlugin::buildPlan()
 
     computeSingerYearRanges();
 
+    auto fold = computeOtherFolding();
+
     std::set<std::wstring> folderSet;
     std::map<std::wstring, std::vector<std::wstring>> leafMap;
 
     for (const auto& s : songs)
     {
-        // Honor unchecked folders: a song bound for an excluded folder falls back
-        // to its nearest checked ancestor.
-        std::wstring path = effectivePath (buildPathFor (s));
-        if (path.empty()) continue;
+        bool filed = false, atRoot = false;
 
-        // All ancestor prefixes are folders that must exist.
-        std::wstring accum;
-        size_t start = 0;
-        while (start <= path.size())
+        // A multi-singer song under splitMultiSingers is filed under each singer.
+        for (const auto& raw : buildPathsFor (s))
         {
-            size_t slash = path.find (L'/', start);
-            std::wstring part = (slash == std::wstring::npos)
-                ? path.substr (start) : path.substr (start, slash - start);
-            if (!part.empty())
+            // Apply the "Other" small-folder cutoff, then honor unchecked folders:
+            // a song bound for an excluded folder falls back to its nearest
+            // checked ancestor.
+            auto fit = fold.find (raw);
+            std::wstring path = effectivePath ((fit == fold.end()) ? raw : fit->second);
+            if (path.empty()) continue;
+
+            // All ancestor prefixes are folders that must exist.
+            std::wstring accum;
+            size_t start = 0;
+            while (start <= path.size())
             {
-                accum = accum.empty() ? part : (accum + L"/" + part);
-                folderSet.insert (accum);
+                size_t slash = path.find (L'/', start);
+                std::wstring part = (slash == std::wstring::npos)
+                    ? path.substr (start) : path.substr (start, slash - start);
+                if (!part.empty())
+                {
+                    accum = accum.empty() ? part : (accum + L"/" + part);
+                    folderSet.insert (accum);
+                }
+                if (slash == std::wstring::npos) break;
+                start = slash + 1;
             }
-            if (slash == std::wstring::npos) break;
-            start = slash + 1;
+
+            leafMap[path].push_back (s.filePath);
+            filed = true;
+            if (path.find (L'/') == std::wstring::npos) atRoot = true;
         }
 
-        leafMap[path].push_back (s.filePath);
-        ++cntFiled;
-        if (path.find (L'/') == std::wstring::npos) ++cntUnfiled;
+        if (filed)  ++cntFiled;     // count each song once, even if filed in several folders
+        if (atRoot) ++cntUnfiled;
     }
 
     // std::set iterates lexicographically → parents sort before their children.

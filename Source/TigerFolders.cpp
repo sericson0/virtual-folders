@@ -71,27 +71,53 @@ static std::wstring yearModeLabel (YearMode m)
 
 static std::wstring yearScopeSuffix (GroupScope sc)
 {
-    return (sc == GroupScope::Instrumental) ? L" · Instrumental only" : L"";
+    return (sc == GroupScope::Instrumental) ? L" · Instrumental" : L"";
+}
+
+// Compact codes for the rhythms a mask selects: "All" for everything, otherwise
+// the initials T / V / M concatenated ("TV", "VM", "TVM"). Used for the combo
+// summary and as a suffix on the component's structure-list label.
+std::wstring rhythmSummaryLabel (unsigned mask)
+{
+    if (mask == RHY_ALL || mask == 0) return L"All";
+    std::wstring out;
+    if (mask & RHY_TANGO)   out += L"T";
+    if (mask & RHY_VALS)    out += L"V";
+    if (mask & RHY_MILONGA) out += L"M";
+    return out.empty() ? L"All" : out;
+}
+
+static std::wstring rhythmSuffix (unsigned mask)
+{
+    return (mask == RHY_ALL) ? L"" : (L"  ·  " + rhythmSummaryLabel (mask));
 }
 
 std::wstring componentModeLabel (const Component& c)
 {
+    std::wstring base;
     switch (c.field)
     {
         case Field::Genre:
-            return (c.genreValue == GroupValue::Normalize) ? L"Normalize" : L"Exact";
+            base = (c.genreValue == GroupValue::Normalize) ? L"Normalize" : L"Exact";
+            break;
         case Field::Bandleader:
         case Field::Singer:
-            return nameModeLabel (c.nameMode);
+            base = nameModeLabel (c.nameMode);
+            break;
         case Field::Grouping:
-            return (c.groupScope == GroupScope::Instrumental) ? L"Instrumental only" : L"All";
+            base = (c.groupScope == GroupScope::Instrumental) ? L"Instrumental" : L"All";
+            break;
         case Field::Year:
-            return yearModeLabel (c.yearMode) + yearScopeSuffix (c.yearScope);
+            base = yearModeLabel (c.yearMode) + yearScopeSuffix (c.yearScope);
+            break;
         case Field::VocalSplit:
-            return L"Singers → " + nameModeLabel (c.nameMode);
+            base = L"Singers → " + nameModeLabel (c.nameMode);
+            break;
         default:
-            return L"Exact";
+            base = L"Exact";
+            break;
     }
+    return base + rhythmSuffix (c.rhythmMask);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,19 +182,34 @@ static std::string serializeComponent (const Component& c)
         default:
             break;
     }
+    // Rhythm filter as a trailing "@<mask>" token (omitted at the default so old
+    // readers and untouched components stay byte-identical).
+    if (c.rhythmMask != RHY_ALL)
+        s += "@" + std::to_string (c.rhythmMask);
     return s;
 }
 
 static bool parseComponent (const std::string& tokenIn, Component& out)
 {
+    // Peel off an optional trailing "@<mask>" rhythm filter before splitting on ':'.
+    std::string token = tokenIn;
+    unsigned rhythmMask = RHY_ALL;
+    size_t at = token.find ('@');
+    if (at != std::string::npos)
+    {
+        rhythmMask = (unsigned) strtoul (token.c_str() + at + 1, nullptr, 10);
+        if (rhythmMask == 0) rhythmMask = RHY_ALL;
+        token = token.substr (0, at);
+    }
+
     // split on ':'
     std::vector<std::string> parts;
     size_t start = 0;
-    while (start <= tokenIn.size())
+    while (start <= token.size())
     {
-        size_t colon = tokenIn.find (':', start);
-        if (colon == std::string::npos) { parts.push_back (tokenIn.substr (start)); break; }
-        parts.push_back (tokenIn.substr (start, colon - start));
+        size_t colon = token.find (':', start);
+        if (colon == std::string::npos) { parts.push_back (token.substr (start)); break; }
+        parts.push_back (token.substr (start, colon - start));
         start = colon + 1;
     }
     if (parts.empty() || parts[0].empty()) return false;
@@ -217,6 +258,7 @@ static bool parseComponent (const std::string& tokenIn, Component& out)
         c.yearScope = (sc == "inst") ? GroupScope::Instrumental : GroupScope::All;
     }
 
+    c.rhythmMask = rhythmMask;
     out = c;
     return true;
 }
@@ -415,6 +457,35 @@ void TigerFoldersPlugin::loadSettings()
         if (key == "root")
         {
             rootName = trimWs (toWide (val));
+            if (rootName.empty()) rootName = L"MyLists";   // never leave the root blank
+        }
+        else if (key == "splitsingers")
+        {
+            splitMultiSingers = (trimWs (toWide (val)) == L"1");
+        }
+        else if (key == "replaceexisting")
+        {
+            replaceExisting = (trimWs (toWide (val)) == L"1");
+        }
+        else if (key == "normalizespanish")
+        {
+            normalizeSpanish = (trimWs (toWide (val)) == L"1");
+        }
+        else if (key == "singleyearrange")
+        {
+            singleYearRange = (trimWs (toWide (val)) == L"1");
+        }
+        else if (key == "cutoffmode")
+        {
+            std::wstring m = trimWs (toWide (val));
+            folderCutoffMode = (m == L"leaf") ? CutoffMode::Leaf
+                             : (m == L"any")  ? CutoffMode::Any
+                                              : CutoffMode::None;
+        }
+        else if (key == "cutoffsize")
+        {
+            int n = _wtoi (trimWs (toWide (val)).c_str());
+            folderCutoffSize = (n < 2) ? 2 : (n > 10 ? 10 : n);
         }
         else if (key == "excluded")
         {
@@ -454,6 +525,14 @@ void TigerFoldersPlugin::saveSettings()
         if (!out.is_open()) return;
 
         out << "root=" << toUtf8 (rootName) << "\n";
+        out << "splitsingers=" << (splitMultiSingers ? 1 : 0) << "\n";
+        out << "replaceexisting=" << (replaceExisting ? 1 : 0) << "\n";
+        out << "normalizespanish=" << (normalizeSpanish ? 1 : 0) << "\n";
+        out << "singleyearrange=" << (singleYearRange ? 1 : 0) << "\n";
+        out << "cutoffmode="
+            << (folderCutoffMode == CutoffMode::Leaf ? "leaf"
+              : folderCutoffMode == CutoffMode::Any  ? "any" : "none") << "\n";
+        out << "cutoffsize=" << folderCutoffSize << "\n";
         out << "components=";
         for (size_t i = 0; i < components.size(); ++i)
         {

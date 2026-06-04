@@ -267,24 +267,28 @@ void TigerFoldersPlugin::rebuildPreview()
 
     computeSingerYearRanges();
 
+    auto fold = computeOtherFolding();
+
     TreeNode root;
     for (const auto& s : songs)
-    {
-        std::wstring path = buildPathFor (s);
-        if (path.empty()) continue;
-
-        TreeNode* cur = &root;
-        size_t start = 0;
-        while (start <= path.size())
+        for (const auto& rawPath : buildPathsFor (s))
         {
-            size_t slash = path.find (L'/', start);
-            std::wstring part = (slash == std::wstring::npos)
-                ? path.substr (start) : path.substr (start, slash - start);
-            if (!part.empty()) { cur = &cur->children[part]; cur->count++; }
-            if (slash == std::wstring::npos) break;
-            start = slash + 1;
+            if (rawPath.empty()) continue;
+            auto fit = fold.find (rawPath);
+            const std::wstring& path = (fit == fold.end()) ? rawPath : fit->second;
+
+            TreeNode* cur = &root;
+            size_t start = 0;
+            while (start <= path.size())
+            {
+                size_t slash = path.find (L'/', start);
+                std::wstring part = (slash == std::wstring::npos)
+                    ? path.substr (start) : path.substr (start, slash - start);
+                if (!part.empty()) { cur = &cur->children[part]; cur->count++; }
+                if (slash == std::wstring::npos) break;
+                start = slash + 1;
+            }
         }
-    }
 
     flatten (root, 0, L"", previewRows, previewFolderCount);
     applyExclusionFlags();

@@ -57,10 +57,12 @@ void ensureFoldersWindowClass (HINSTANCE hInst)
 
 struct Layout
 {
-    RECT title, brand, settings, close;
-    RECT addLabel, comboField, comboMode, btnAdd;
-    RECT compLabel, compList, btnRemove, btnClear;
-    RECT rootLabel, editRoot, sourceLabel, source;
+    RECT title, brand, settings, close, chkSplit, chkReplace, chkSpanish, chkYearPad;
+    RECT addLabel, hdrField, hdrMode, hdrApplies;
+    RECT comboField, comboMode, comboRhythm, btnAdd;
+    RECT compLabel, structFrame, rootNode, compList, btnRemove, btnClear;
+    RECT cutMode, cutSize;
+    RECT editRoot, source;
     RECT btnScan, btnBuild, status;
     RECT prevLabel, prevList;
     int  leftW = 0, rightX = 0, rightW = 0;
@@ -74,8 +76,19 @@ static Layout computeLayout (HWND hwnd)
 
     L.title    = { 0, 0, W, TITLE_H };
     L.close    = { W - 30, 4, W - 6, TITLE_H - 4 };
-    L.settings = { W - 60, 4, W - 34, TITLE_H - 4 };
     L.brand    = { PAD, 0, W - 64, TITLE_H };
+
+    // Banner toggles, right-aligned just left of the ✕ icon: Pad single years +
+    // Normalize Spanish + Split singers + the append/replace build-mode switch.
+    {
+        const int te = W - 40, gap = 14;
+        const int repW = 112, splW = 92, spanW = 132, padW = 116;
+        int x = te;
+        L.chkReplace  = { x - repW,  6, x, TITLE_H - 4 }; x -= repW + gap;
+        L.chkSplit    = { x - splW,  6, x, TITLE_H - 4 }; x -= splW + gap;
+        L.chkSpanish  = { x - spanW, 6, x, TITLE_H - 4 }; x -= spanW + gap;
+        L.chkYearPad  = { x - padW,  6, x, TITLE_H - 4 };
+    }
 
     L.leftW  = W * LEFT_COL_PCT / 100;
     L.rightX = L.leftW + PAD;
@@ -85,28 +98,44 @@ static Layout computeLayout (HWND hwnd)
     const int lr = L.leftW - PAD;
     int y = TITLE_H + PAD;
 
-    L.addLabel  = { lx, y, lr, y + 16 }; y += 20;
-    L.comboField = { lx, y, lx + 124, y + ROW_H };
-    L.comboMode  = { lx + 130, y, lr - 72, y + ROW_H };   // flex; even 6px gap before ADD
-    L.btnAdd     = { lr - 66, y, lr, y + ROW_H };
-    y += ROW_H + 10;
-
-    // Root folder name — sits directly above the structure as the tree's root.
-    L.rootLabel = { lx, y, lx + 44, y + ROW_H };
-    L.editRoot  = { lx + 48, y, lr, y + ROW_H };
-    y += ROW_H + 8;
+    L.addLabel  = { lx, y, lr, y + 16 }; y += 22;
+    // A single compact row: Field / Mode / Genre-flag / ADD, each combo capped to
+    // its content (no full-width stretch) with a small header above it.
+    const int fieldW = 92, appliesW = 72, addW = 44, g = 6;
+    int hdrY = y;
+    int inY  = y + 13;
+    L.comboField  = { lx, inY, lx + fieldW, inY + ROW_H };
+    L.btnAdd      = { lr - addW, inY, lr, inY + ROW_H };
+    L.comboRhythm = { lr - addW - g - appliesW, inY, lr - addW - g, inY + ROW_H };
+    L.comboMode   = { lx + fieldW + g, inY, L.comboRhythm.left - g, inY + ROW_H };
+    L.hdrField    = { L.comboField.left,  hdrY, L.comboField.right,  hdrY + 12 };
+    L.hdrMode     = { L.comboMode.left,   hdrY, L.comboMode.right,   hdrY + 12 };
+    L.hdrApplies  = { L.comboRhythm.left, hdrY, L.comboRhythm.right, hdrY + 12 };
+    y = inY + ROW_H + 10;
 
     L.compLabel = { lx, y, lr, y + 16 }; y += 18;
 
     const int bottomBlock = 8 + 22 /*remove/clear*/ + 8
                           + 8 /*progress bar*/ + 10 + BTN_H /*scan+build*/ + 6 + 16 /*status*/ + PAD;
     int listBottom = H - bottomBlock;
-    if (listBottom < y + 60) listBottom = y + 60;
-    L.compList = { lx, y, lr, listBottom };
+    if (listBottom < y + 60 + COMP_ITEM_H) listBottom = y + 60 + COMP_ITEM_H;
+    // The structure reads as a tree: the editable root-name box tops a bordered
+    // frame (it IS the input now), the draggable component list fills the rest.
+    L.structFrame = { lx, y, lr, listBottom };
+    L.rootNode    = { lx, y, lr, y + COMP_ITEM_H };
+    L.editRoot    = { lx + 6, y + 3, lr - 6, y + COMP_ITEM_H - 3 };
+    L.compList    = { lx, y + COMP_ITEM_H, lr, listBottom };
     y = listBottom + 8;
 
     L.btnRemove = { lx, y, lx + 84, y + 22 };
     L.btnClear  = { lx + 90, y, lx + 90 + 72, y + 22 };
+    // "Other" small-folder cutoff chips, right-aligned on the same row: a mode
+    // selector (None / Leaf / Any) and a size stepper (2-10). Clicks cycle them.
+    {
+        const int szW = 52, mdW = 92, g2 = 6;
+        L.cutSize = { lr - szW, y, lr, y + 22 };
+        L.cutMode = { lr - szW - g2 - mdW, y, lr - szW - g2, y + 22 };
+    }
     y += 22 + 8;
 
     // Slim progress bar (only painted while scanning/building).
@@ -119,7 +148,7 @@ static Layout computeLayout (HWND hwnd)
     L.status = { lx, y, lr, y + 16 };
 
     int ry = TITLE_H + PAD;
-    L.prevLabel = { L.rightX, ry, L.rightX + L.rightW, ry + 16 }; ry += 20;
+    L.prevLabel = { L.rightX + 8, ry, L.rightX + L.rightW, ry + 16 }; ry += 20;
     L.prevList  = { L.rightX, ry, L.rightX + L.rightW, H - PAD };
 
     return L;
@@ -155,7 +184,7 @@ void TigerFoldersPlugin::uiRepopulateModeCombo()
     {
         case Field::Genre:
             SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"Exact");
-            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"Normalize (Tango/Vals/Milonga…)");
+            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"Normalize");
             SendMessageW (hComboMode, CB_SETCURSEL, 0, 0);
             pendingGenreValue = GroupValue::Exact;
             break;
@@ -177,7 +206,7 @@ void TigerFoldersPlugin::uiRepopulateModeCombo()
             break;
         case Field::Grouping:
             SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"All tracks");
-            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"Instrumental only");
+            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"Instrumental");
             SendMessageW (hComboMode, CB_SETCURSEL, 0, 0);
             pendingScope = GroupScope::All;
             pendingValue = GroupValue::Exact;
@@ -186,9 +215,9 @@ void TigerFoldersPlugin::uiRepopulateModeCombo()
             SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"2 years");
             SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"5 years");
             SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"10 years (decade)");
-            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"2 years · Instrumental only");
-            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"5 years · Instrumental only");
-            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"10 years · Instrumental only");
+            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"2 years · Instrumental");
+            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"5 years · Instrumental");
+            SendMessageW (hComboMode, CB_ADDSTRING, 0, (LPARAM) L"10 years · Instrumental");
             SendMessageW (hComboMode, CB_SETCURSEL, 2, 0);
             pendingYearMode  = YearMode::Y10;
             pendingYearScope = GroupScope::All;
@@ -217,11 +246,11 @@ void TigerFoldersPlugin::uiRepopulateModeCombo()
                               L"Tango / Vals / Milonga / Cortina / Other.";
                 break;
             case Field::Grouping:
-                modeTipText = L"All = every track. Instrumental only = this level applies "
-                              L"to instrumentals.";
+                modeTipText = L"All = every track. Instrumental = this level applies "
+                              L"to instrumentals only.";
                 break;
             case Field::Year:
-                modeTipText = L"Year bucket width. Instrumental only = applies to instrumentals.";
+                modeTipText = L"Year bucket width. Instrumental = applies to instrumentals only.";
                 break;
             default:
                 modeTipText.clear();
@@ -274,9 +303,11 @@ void TigerFoldersPlugin::uiResetAddRow()
     editingIndex = -1;
     fieldChosen  = false;
     pendingField = Field::Genre;
+    pendingRhythmMask = RHY_ALL;
     SendMessageW (hComboField, CB_SETCURSEL, 0, 0);   // placeholder
+    if (hComboRhythm) InvalidateRect (hComboRhythm, nullptr, TRUE);
     uiRepopulateModeCombo();
-    SetWindowTextW (hBtnAdd, L"ADD →");
+    SetWindowTextW (hBtnAdd, L"ADD");
     uiSyncAddButton();
 }
 
@@ -287,6 +318,8 @@ void TigerFoldersPlugin::uiLoadComponentForEdit (int idx)
     editingIndex = idx;
     fieldChosen  = true;
     pendingField = c.field;
+    pendingRhythmMask = c.rhythmMask;
+    if (hComboRhythm) InvalidateRect (hComboRhythm, nullptr, TRUE);
 
     // Select field in combo (index+1 because 0 is the placeholder)
     for (int i = 0; i < kFieldCount; ++i)
@@ -358,15 +391,49 @@ void TigerFoldersPlugin::uiSetOpRunning (bool running)
     BOOL en = running ? FALSE : TRUE;
     EnableWindow (hComboField, en);
     EnableWindow (hComboMode, en);
+    EnableWindow (hComboRhythm, en);
     EnableWindow (hBtnRemove, en);
     EnableWindow (hBtnClear, en);
     EnableWindow (hEditRoot, en);
-    EnableWindow (hBtnBuild, en);
-
-    SetWindowTextW (hBtnScan, running ? L"Cancel" : L"Scan & Preview");
+    uiRefreshActionButtons();
     if (running) EnableWindow (hBtnAdd, FALSE); else uiSyncAddButton();
 
     if (hDlg) InvalidateRect (hDlg, nullptr, FALSE);
+}
+
+// The bottom action area is a two-step workflow: before a scan there is just a
+// full-width "Scan & Preview"; once a preview exists it becomes "← Back" (clears
+// the scan) + "Build". While an op runs the single button reads "Cancel".
+void TigerFoldersPlugin::uiRefreshActionButtons()
+{
+    if (!hBtnScan || !hBtnBuild || !hDlg) return;
+    Layout L = computeLayout (hDlg);
+    auto mv = [] (HWND h, const RECT& r) {
+        if (h) MoveWindow (h, r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
+    };
+
+    bool running  = (op != Op::None);
+    bool haveScan = !songs.empty();
+    RECT full = { L.btnScan.left, L.btnScan.top, L.btnBuild.right, L.btnScan.bottom };
+
+    if (!running && haveScan)
+    {
+        SetWindowTextW (hBtnScan,  L"← Back");
+        SetWindowTextW (hBtnBuild, L"Build");
+        mv (hBtnScan, L.btnScan);
+        mv (hBtnBuild, L.btnBuild);
+        ShowWindow (hBtnScan,  SW_SHOW);
+        ShowWindow (hBtnBuild, SW_SHOW);
+        EnableWindow (hBtnBuild, TRUE);
+    }
+    else
+    {
+        SetWindowTextW (hBtnScan, running ? L"Cancel" : L"Scan & Preview");
+        mv (hBtnScan, full);
+        ShowWindow (hBtnScan,  SW_SHOW);
+        ShowWindow (hBtnBuild, SW_HIDE);
+    }
+    InvalidateRect (hBtnScan, nullptr, FALSE);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -398,15 +465,26 @@ static void applyLayout (HWND hwnd, TigerFoldersPlugin* p)
     mv (p->hBtnClose, L.close);
     mvCombo (p->hComboField, L.comboField);
     mvCombo (p->hComboMode, L.comboMode);
+    mvCombo (p->hComboRhythm, L.comboRhythm);
     mv (p->hBtnAdd, L.btnAdd);
     mv (p->hListComponents, L.compList);
     mv (p->hBtnRemove, L.btnRemove);
     mv (p->hBtnClear, L.btnClear);
     mv (p->hEditRoot, L.editRoot);
-    mv (p->hBtnScan, L.btnScan);
-    mv (p->hBtnBuild, L.btnBuild);
+    // Single-line edits top-align their text against the formatting rectangle;
+    // inset it so the text sits vertically centered, matching the "ROOT" label.
+    if (p->hEditRoot)
+    {
+        RECT erc; GetClientRect (p->hEditRoot, &erc);
+        int th  = FONT_NORMAL + 5;                       // ~line height for the 13px UI font
+        int top = ((erc.bottom - erc.top) - th) / 2;
+        if (top < 0) top = 0;
+        RECT fmt = { 4, top, erc.right - 2, erc.bottom };
+        SendMessageW (p->hEditRoot, EM_SETRECTNP, 0, (LPARAM) &fmt);
+    }
     mv (p->hListPreview, L.prevList);
 
+    p->uiRefreshActionButtons();   // positions + labels Scan / Back / Build per state
     applyVisibility (p);
 }
 
@@ -496,6 +574,46 @@ static LRESULT CALLBACK previewListSubclass (HWND hwnd, UINT msg, WPARAM wParam,
         {
             RECT cr; GetClientRect (hwnd, &cr);
             if (pt.x < cr.right - 46) { p->togglePreviewExclusion (LOWORD (r)); return 0; }
+        }
+    }
+    return DefSubclassProc (hwnd, msg, wParam, lParam);
+}
+
+// Apply a click on a rhythm-filter checkbox. Item 0 = "All" (the everything
+// default); items 1-3 = Tango / Vals / Milonga. Picking a specific rhythm while
+// "All" is active narrows to just that rhythm; clearing the last one reverts to
+// "All" so a component never filters out every song.
+static void toggleRhythm (TigerFoldersPlugin* p, int item)
+{
+    if (item == 0) { p->pendingRhythmMask = RHY_ALL; return; }
+
+    unsigned bit = (item == 1) ? RHY_TANGO : (item == 2) ? RHY_VALS : RHY_MILONGA;
+    if (p->pendingRhythmMask == RHY_ALL) p->pendingRhythmMask = bit;
+    else                                 p->pendingRhythmMask ^= bit;
+    p->pendingRhythmMask &= (RHY_TANGO | RHY_VALS | RHY_MILONGA);
+    if (p->pendingRhythmMask == 0) p->pendingRhythmMask = RHY_ALL;
+}
+
+// The rhythm combo is a multi-check dropdown: a click on a list item toggles that
+// rhythm and is swallowed so the dropdown stays open (a real combobox would commit
+// the selection and close). Clicks outside an item fall through to close it.
+static LRESULT CALLBACK rhythmListSubclass (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                            UINT_PTR, DWORD_PTR refData)
+{
+    auto* p = reinterpret_cast<TigerFoldersPlugin*> (refData);
+    if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)
+    {
+        POINT pt { GET_X_LPARAM (lParam), GET_Y_LPARAM (lParam) };
+        DWORD r = (DWORD) SendMessageW (hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM (pt.x, pt.y));
+        if (HIWORD (r) == 0)   // a real item under the cursor → toggle, keep open
+        {
+            if (msg == WM_LBUTTONDOWN)
+            {
+                toggleRhythm (p, LOWORD (r));
+                InvalidateRect (hwnd, nullptr, FALSE);
+                if (p->hComboRhythm) InvalidateRect (p->hComboRhythm, nullptr, TRUE);
+            }
+            return 0;   // swallow so the combo doesn't commit + close
         }
     }
     return DefSubclassProc (hwnd, msg, wParam, lParam);
@@ -622,6 +740,48 @@ static void drawComboItem (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     RECT rc = dis->rcItem;
     bool sel = (dis->itemState & ODS_SELECTED) != 0;
     bool disabled = (dis->itemState & ODS_DISABLED) != 0;
+
+    // Rhythm filter: a multi-check dropdown. The closed field (ODS_COMBOBOXEDIT)
+    // shows a summary of the pending mask; each dropdown row shows a checkbox.
+    if (dis->hwndItem == p->hComboRhythm)
+    {
+        if (dis->itemState & ODS_COMBOBOXEDIT)
+        {
+            fillRect (hdc, rc, TCol::inputBg);
+            RECT tr = rc; tr.left += 7;
+            drawText (hdc, tr, rhythmSummaryLabel (p->pendingRhythmMask),
+                      disabled ? TCol::textDim : TCol::textBright, p->fontNormal,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            return;
+        }
+
+        fillRect (hdc, rc, sel ? TCol::selSubtle : TCol::inputBg);
+        int item = (int) dis->itemID;
+        unsigned mask = p->pendingRhythmMask;
+        bool checked = (item == 0) ? (mask == RHY_ALL)
+                     : (item == 1) ? ((mask & RHY_TANGO)   != 0)
+                     : (item == 2) ? ((mask & RHY_VALS)    != 0)
+                                   : ((mask & RHY_MILONGA) != 0);
+        const int cbSize = 13;
+        int cy = rc.top + ((rc.bottom - rc.top) - cbSize) / 2;
+        RECT cb = { rc.left + 7, cy, rc.left + 7 + cbSize, cy + cbSize };
+        if (checked)
+        {
+            fillRect (hdc, cb, TCol::selSubtle);
+            frameRect (hdc, cb, TCol::inputBorder);
+            drawText (hdc, cb, L"✓", TCol::textBright, p->fontSmall,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        else
+            frameRect (hdc, cb, TCol::textDim);
+
+        static const wchar_t* kNames[] = { L"All", L"Tango", L"Vals", L"Milonga" };
+        RECT tr = { rc.left + 7 + cbSize + 8, rc.top, rc.right, rc.bottom };
+        drawText (hdc, tr, (item >= 0 && item < 4) ? kNames[item] : L"",
+                  TCol::textBright, p->fontNormal, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+
     fillRect (hdc, rc, sel ? TCol::selSubtle : TCol::inputBg);
 
     std::wstring text;
@@ -655,15 +815,16 @@ static void drawComponentItem (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     RECT grip = { rc.left + 6, rc.top, rc.left + 20, rc.bottom };
     drawText (hdc, grip, L"≡", TCol::textDim, p->fontNormal, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    // Indent by depth (root is the field above, idx 0 is its first child) and
-    // draw a tree connector so the chain reads like a nested folder structure.
+    // Indent by depth so the chain reads like a nested folder structure. The first
+    // component sits at the base indent (a direct child of the root row above), so
+    // there is no extra root-level offset.
     int indent  = idx * 16;
     int branchX = rc.left + 24 + indent;
     RECT branch = { branchX, rc.top, branchX + 16, rc.bottom };
     drawText (hdc, branch, L"└", TCol::textDim, p->fontNormal, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     RECT tr = { branchX + 16, rc.top, rc.right - 8, rc.bottom };
-    std::wstring line = fieldLabel (c.field) + L"  ·  " + componentModeLabel (c);
+    std::wstring line = fieldLabel (c.field) + L"   " + componentModeLabel (c);
     drawText (hdc, tr, line, TCol::textBright, p->fontNormal,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -696,8 +857,10 @@ static void drawPreviewItem (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     RECT cb = { rc.left + 6, cy, rc.left + 6 + cbSize, cy + cbSize };
     if (ownChecked)
     {
-        fillRect (hdc, cb, TCol::accent);
-        drawText (hdc, cb, L"✓", RGB (20, 22, 30), p->fontSmall,
+        // Checked = subtle gray highlight + a bright checkmark (no orange fill).
+        fillRect (hdc, cb, TCol::selSubtle);
+        frameRect (hdc, cb, TCol::inputBorder);
+        drawText (hdc, cb, L"✓", TCol::textBright, p->fontSmall,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     else
@@ -708,7 +871,9 @@ static void drawPreviewItem (TigerFoldersPlugin* p, DRAWITEMSTRUCT* dis)
     std::wstring name = (row.isLeaf ? L"• " : L"") + row.name;
     COLORREF nameCol = dim ? TCol::textDim
                      : row.isLeaf ? TCol::textNormal : TCol::textBright;
-    drawText (hdc, tr, name, nameCol, p->fontNormal,
+    // The first level (top-level folders) is bold so the tree's spine stands out.
+    HFONT nameFont = (row.depth == 0) ? p->fontBold : p->fontNormal;
+    drawText (hdc, tr, name, nameCol, nameFont,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     RECT cnt = { rc.right - 46, rc.top, rc.right - 6, rc.bottom };
@@ -740,27 +905,80 @@ static void paintWindow (HWND hwnd, TigerFoldersPlugin* p)
     drawText (mem, L.brand, L"TigerFolders", TCol::accentBrt, p->fontTitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+    // Banner toggles (Split singers + append/replace). Same gray-checkbox style as
+    // the preview include checkboxes.
+    {
+        auto drawCheck = [&] (const RECT& area, bool on, const std::wstring& label) {
+            const int cbSize = 13;
+            int cy = area.top + ((area.bottom - area.top) - cbSize) / 2;
+            RECT cb = { area.left, cy, area.left + cbSize, cy + cbSize };
+            if (on)
+            {
+                fillRect (mem, cb, TCol::selSubtle);
+                frameRect (mem, cb, TCol::inputBorder);
+                drawText (mem, cb, L"✓", TCol::textBright, p->fontSmall,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            else
+                frameRect (mem, cb, TCol::textDim);
+            RECT tr = area; tr.left += cbSize + 6;
+            drawText (mem, tr, label, on ? TCol::textBright : TCol::textNormal,
+                      p->fontSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        };
+        drawCheck (L.chkYearPad, p->singleYearRange,   L"Pad single years");
+        drawCheck (L.chkSpanish, p->normalizeSpanish,  L"Normalize Spanish");
+        drawCheck (L.chkSplit,   p->splitMultiSingers, L"Split singers");
+        drawCheck (L.chkReplace, p->replaceExisting,   L"Replace existing");
+    }
+
     {
         // Right-column panel surface + frame to separate the two columns
         RECT rPanel = { L.rightX - 2, TITLE_H + 4, cr.right - 4, cr.bottom - 4 };
         fillRect (mem, rPanel, TCol::panel);
         frameRect (mem, rPanel, TCol::cardBorder);
 
-        drawText (mem, L.addLabel, L"ADD COMPONENT", TCol::accentBrt, p->fontHeader,
+        drawText (mem, L.addLabel, L"ADD COMPONENT", TCol::accent, p->fontHeader,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        drawText (mem, L.compLabel, L"STRUCTURE", TCol::accentBrt, p->fontHeader,
+        drawText (mem, L.compLabel, L"STRUCTURE", TCol::accent, p->fontHeader,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        // Component-list frame + empty hint
-        frameRect (mem, L.compList, TCol::cardBorder);
+        // Small headers above each add-row input.
+        drawText (mem, L.hdrField, L"FIELD", TCol::textDim, p->fontSmall,
+                  DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+        if (fieldHasSubmode (p->pendingField))
+            drawText (mem, L.hdrMode, L"MODE", TCol::textDim, p->fontSmall,
+                      DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+        drawText (mem, L.hdrApplies, L"GENRE FLAG", TCol::textDim, p->fontSmall,
+                  DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+
+        // Structure frame: the editable root-name box (hEditRoot) sits in the top
+        // node and IS the root input; the component list fills the rest.
+        frameRect (mem, L.structFrame, TCol::cardBorder);
+        {
+            frameRect (mem, L.editRoot, TCol::inputBorder);   // outline the root edit
+            RECT sep = { L.rootNode.left, L.rootNode.bottom - 1, L.rootNode.right, L.rootNode.bottom };
+            fillRect (mem, sep, TCol::cardBorder);
+        }
         if (p->components.empty())
-            drawText (mem, L.compList, L"Pick a field above and click ADD →",
+            drawText (mem, L.compList, L"Pick a field above and click ADD",
                       TCol::textDim, p->fontSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-        drawText (mem, L.rootLabel, L"ROOT", TCol::textNormal, p->fontNormal,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        // Gray input-box outline around the root edit.
-        frameRect (mem, L.editRoot, TCol::inputBorder);
+        // "Other" small-folder cutoff chips (mode + size), clicked to cycle.
+        {
+            auto chip = [&] (const RECT& r, const std::wstring& txt, bool active, bool enabled) {
+                fillRect (mem, r, TCol::card);
+                frameRect (mem, r, active ? TCol::inputBorder : TCol::cardBorder);
+                COLORREF tc = !enabled ? TCol::textDim
+                            : active   ? TCol::textBright : TCol::textNormal;
+                drawText (mem, r, txt, tc, p->fontSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            };
+            bool on = (p->folderCutoffMode != CutoffMode::None);
+            const wchar_t* mlab = (p->folderCutoffMode == CutoffMode::Leaf) ? L"Other: Leaf"
+                                : (p->folderCutoffMode == CutoffMode::Any)  ? L"Other: Any"
+                                                                            : L"Other: Off";
+            chip (L.cutMode, mlab, on, true);
+            chip (L.cutSize, L"≤ " + std::to_wstring (p->folderCutoffSize), on, on);
+        }
 
         // Slim progress bar while an op runs (idle: blank).
         if (p->op != Op::None)
@@ -785,13 +1003,20 @@ static void paintWindow (HWND hwnd, TigerFoldersPlugin* p)
                       p->statusError ? RGB (240, 120, 110) : TCol::good,
                       p->fontSmall, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        // Right-column header + preview placeholder
-        std::wstring head = L"PREVIEW";
-        if (!p->songs.empty())
-            head += L"  ·  " + std::to_wstring (p->songs.size()) + L" songs → "
-                  + std::to_wstring (p->previewFolderCount) + L" folders";
-        drawText (mem, L.prevLabel, head, TCol::accentBrt, p->fontHeader,
+        // Right-column header: "PREVIEW" accented, the count info in plain gray.
+        drawText (mem, L.prevLabel, L"PREVIEW", TCol::accent, p->fontHeader,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        if (!p->songs.empty())
+        {
+            HFONT oldHf = (HFONT) SelectObject (mem, p->fontHeader);
+            SIZE sz {}; GetTextExtentPoint32W (mem, L"PREVIEW", 7, &sz);
+            SelectObject (mem, oldHf);
+            std::wstring info = L"  ·  " + std::to_wstring (p->songs.size()) + L" songs → "
+                              + std::to_wstring (p->previewFolderCount) + L" folders";
+            RECT ir = L.prevLabel; ir.left += sz.cx;
+            drawText (mem, ir, info, TCol::textNormal, p->fontHeader,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
         frameRect (mem, L.prevList, TCol::cardBorder);
         if (p->previewRows.empty())
             drawText (mem, L.prevList,
@@ -823,6 +1048,7 @@ static void doAdd (TigerFoldersPlugin* p)
     c.genreValue = p->pendingGenreValue;
     c.yearMode   = p->pendingYearMode;
     c.yearScope  = p->pendingYearScope;
+    c.rhythmMask = p->pendingRhythmMask;
 
     if (p->editingIndex >= 0 && p->editingIndex < (int) p->components.size())
         p->components[p->editingIndex] = c;     // edit in place
@@ -869,21 +1095,36 @@ static void doBuild (TigerFoldersPlugin* p)
     if (p->components.empty()) { p->uiUpdateStatus (L"Add at least one component first", true); return; }
     if (p->songs.empty())      { p->uiUpdateStatus (L"Scan a folder first", true); return; }
 
-    bool wipe = false;
-    if (p->managedRootExists())
+    // The banner "Replace existing" toggle decides the build mode: replace deletes
+    // the same-named tree first; append (default) merges into whatever is there.
+    bool wipe = p->replaceExisting;
+    if (wipe && p->managedRootExists())
     {
         std::wstring root = sanitizeSegment (p->rootName);
         std::wstring text =
-            L"Virtual folders under \"" + root + L"\" already exist.\n\n"
-            L"• Yes — MERGE: add these songs to the existing structure (nothing deleted).\n"
-            L"• No — REBUILD: DELETE the entire \"" + root + L"\" tree first, then rebuild.\n"
-            L"• Cancel — do nothing.";
-        int r = MessageBoxW (p->hDlg, text.c_str(), L"TigerFolders — Build",
-                             MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON1);
-        if (r == IDCANCEL) { p->uiUpdateStatus (L"Build cancelled"); return; }
-        wipe = (r == IDNO);
+            L"Replace mode: this will DELETE the existing \"" + root +
+            L"\" virtual folder tree, then rebuild it from scratch.\n\nContinue?";
+        if (MessageBoxW (p->hDlg, text.c_str(), L"TigerFolders — Replace",
+                         MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
+        {
+            p->uiUpdateStatus (L"Build cancelled");
+            return;
+        }
     }
     p->buildBegin (wipe);
+}
+
+// "← Back" — discard the scan/preview and return to the Scan step.
+static void doBack (TigerFoldersPlugin* p)
+{
+    if (p->op != Op::None) return;
+    p->songs.clear();
+    p->previewRows.clear();
+    p->previewFolderCount = 0;
+    p->cntUnfiled = 0;
+    p->uiRefreshPreviewList();
+    p->uiUpdateStatus (L"");
+    applyLayout (p->hDlg, p);     // repositions buttons back to a single full-width Scan
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -918,7 +1159,29 @@ static void createControls (HWND hwnd, TigerFoldersPlugin* p, HINSTANCE hInst)
         SendMessageW (p->hComboField, CB_ADDSTRING, 0, (LPARAM) fieldLabel (kFieldOrder[i]).c_str());
     SendMessageW (p->hComboField, CB_SETCURSEL, 0, 0);
 
-    p->hBtnAdd = mkButton (IDC_BTN_ADD, L"ADD →");
+    // Rhythm filter — a multi-check dropdown (All / Tango / Vals / Milonga). Its
+    // dropdown listbox is subclassed so item clicks toggle checks instead of
+    // committing a selection and closing.
+    p->hComboRhythm = CreateWindowExW (0, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+        0, 0, 10, 200, hwnd, (HMENU) IDC_COMBO_RHYTHM, hInst, nullptr);
+    SetWindowTheme (p->hComboRhythm, L"", L"");
+    SetWindowSubclass (p->hComboRhythm, comboSubclass, 11, (DWORD_PTR) p);
+    SendMessageW (p->hComboRhythm, CB_ADDSTRING, 0, (LPARAM) L"All");
+    SendMessageW (p->hComboRhythm, CB_ADDSTRING, 0, (LPARAM) L"Tango");
+    SendMessageW (p->hComboRhythm, CB_ADDSTRING, 0, (LPARAM) L"Vals");
+    SendMessageW (p->hComboRhythm, CB_ADDSTRING, 0, (LPARAM) L"Milonga");
+    SendMessageW (p->hComboRhythm, CB_SETCURSEL, 0, 0);
+    {
+        COMBOBOXINFO cbi { sizeof (cbi) };
+        if (GetComboBoxInfo (p->hComboRhythm, &cbi) && cbi.hwndList)
+        {
+            SetWindowSubclass (cbi.hwndList, rhythmListSubclass, 20, (DWORD_PTR) p);
+            p->rhythmListSubclassed = true;
+        }
+    }
+
+    p->hBtnAdd = mkButton (IDC_BTN_ADD, L"ADD");
     EnableWindow (p->hBtnAdd, FALSE);
 
     p->hListComponents = CreateWindowExW (0, L"LISTBOX", L"",
@@ -933,6 +1196,8 @@ static void createControls (HWND hwnd, TigerFoldersPlugin* p, HINSTANCE hInst)
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         0, 0, 10, 10, hwnd, (HMENU) IDC_EDIT_ROOT, hInst, nullptr);
     SendMessageW (p->hEditRoot, WM_SETFONT, (WPARAM) p->fontNormal, TRUE);
+    // Cue when blank — this top box is the tree's root folder name.
+    SendMessageW (p->hEditRoot, EM_SETCUEBANNER, TRUE, (LPARAM) L"Root folder name (e.g. MyLists)");
 
     p->hBtnScan  = mkButton (IDC_BTN_SCAN, L"Scan & Preview");
     p->hBtnBuild = mkButton (IDC_BTN_BUILD, L"Build");
@@ -1089,13 +1354,25 @@ LRESULT CALLBACK FoldersWndProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 int sel = (int) SendMessageW (p->hComboField, CB_GETCURSEL, 0, 0);
                 p->fieldChosen = (sel > 0);
                 if (p->fieldChosen) p->pendingField = kFieldOrder[sel - 1];
-                if (p->editingIndex >= 0) { p->editingIndex = -1; SetWindowTextW (p->hBtnAdd, L"ADD →"); }
+                if (p->editingIndex >= 0) { p->editingIndex = -1; SetWindowTextW (p->hBtnAdd, L"ADD"); }
                 p->uiRepopulateModeCombo();
                 applyLayout (hwnd, p);
                 p->uiSyncAddButton();
                 return 0;
             }
             if (id == IDC_COMBO_MODE && code == CBN_SELCHANGE) { readPendingMode (p); return 0; }
+            if (id == IDC_COMBO_RHYTHM && code == CBN_DROPDOWN && !p->rhythmListSubclassed)
+            {
+                // Belt-and-suspenders: subclass the dropdown listbox here too, in
+                // case GetComboBoxInfo at creation time didn't yet have the list.
+                COMBOBOXINFO cbi { sizeof (cbi) };
+                if (GetComboBoxInfo (p->hComboRhythm, &cbi) && cbi.hwndList)
+                {
+                    SetWindowSubclass (cbi.hwndList, rhythmListSubclass, 20, (DWORD_PTR) p);
+                    p->rhythmListSubclassed = true;
+                }
+                return 0;
+            }
             if (id == IDC_EDIT_ROOT && code == EN_CHANGE)
             {
                 wchar_t buf[256] = {};
@@ -1120,8 +1397,9 @@ LRESULT CALLBACK FoldersWndProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     case IDC_BTN_REMOVE: doRemove (p); return 0;
                     case IDC_BTN_CLEAR:  doClear (p); return 0;
                     case IDC_BTN_SCAN:
-                        if (p->op != Op::None) p->opCancel = true;
-                        else                   p->scanBegin();
+                        if (p->op != Op::None)        p->opCancel = true;  // Cancel
+                        else if (!p->songs.empty())   doBack (p);          // ← Back
+                        else                          p->scanBegin();      // Scan & Preview
                         return 0;
                     case IDC_BTN_BUILD:  doBuild (p); return 0;
                     case IDC_BTN_CLOSE:
@@ -1137,10 +1415,68 @@ LRESULT CALLBACK FoldersWndProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_LBUTTONDOWN:
         {
             POINT pt { GET_X_LPARAM (lParam), GET_Y_LPARAM (lParam) };
+            Layout L = computeLayout (hwnd);
+
+            // Banner toggles sit inside the title strip — handle them before the
+            // click falls through to window-drag.
+            if (p->op == Op::None && PtInRect (&L.chkSplit, pt))
+            {
+                p->splitMultiSingers = !p->splitMultiSingers;
+                if (!p->songs.empty()) { p->rebuildPreview(); p->uiRefreshPreviewList(); }
+                p->saveSettings();
+                InvalidateRect (hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (p->op == Op::None && PtInRect (&L.chkReplace, pt))
+            {
+                p->replaceExisting = !p->replaceExisting;
+                p->saveSettings();
+                InvalidateRect (hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (p->op == Op::None && PtInRect (&L.chkSpanish, pt))
+            {
+                p->normalizeSpanish = !p->normalizeSpanish;
+                if (!p->songs.empty()) { p->rebuildPreview(); p->uiRefreshPreviewList(); }
+                p->saveSettings();
+                InvalidateRect (hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (p->op == Op::None && PtInRect (&L.chkYearPad, pt))
+            {
+                p->singleYearRange = !p->singleYearRange;
+                if (!p->songs.empty()) { p->rebuildPreview(); p->uiRefreshPreviewList(); }
+                p->saveSettings();
+                InvalidateRect (hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            // "Other" cutoff chips: mode cycles None→Leaf→Any; size cycles 2..10.
+            if (p->op == Op::None && PtInRect (&L.cutMode, pt))
+            {
+                p->folderCutoffMode = (p->folderCutoffMode == CutoffMode::None) ? CutoffMode::Leaf
+                                    : (p->folderCutoffMode == CutoffMode::Leaf) ? CutoffMode::Any
+                                                                                : CutoffMode::None;
+                if (!p->songs.empty()) { p->rebuildPreview(); p->uiRefreshPreviewList(); }
+                p->saveSettings();
+                InvalidateRect (hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (p->op == Op::None && p->folderCutoffMode != CutoffMode::None
+                && PtInRect (&L.cutSize, pt))
+            {
+                p->folderCutoffSize = (p->folderCutoffSize >= 10) ? 2 : p->folderCutoffSize + 1;
+                if (!p->songs.empty()) { p->rebuildPreview(); p->uiRefreshPreviewList(); }
+                p->saveSettings();
+                InvalidateRect (hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             if (pt.y < TITLE_H)
             {
                 ReleaseCapture();
                 SendMessageW (hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                return 0;
             }
             return 0;
         }

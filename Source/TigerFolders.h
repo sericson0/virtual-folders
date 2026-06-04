@@ -32,6 +32,26 @@ enum class GroupValue { Exact, Normalize };
 // Year bucket width (all grid-aligned).
 enum class YearMode { Y2, Y5, Y10 };
 
+// "Other" small-folder cutoff. None = off; Leaf = only fold the deepest folders
+// (the ones that hold songs) whose count is at/below the size; Any = fold a folder
+// at any depth whose whole subtree is at/below the size (its songs collapse into a
+// sibling "Other").
+enum class CutoffMode { None, Leaf, Any };
+
+// Per-component rhythm filter. A component only contributes its subfolder level
+// to songs whose normalized rhythm bit is set in the mask; non-matching songs
+// skip the level (e.g. a Tango-only Grouping leaves Vals/Milonga ungrouped).
+// RHY_OTHER covers Cortina / Other / untagged. RHY_ALL (the default) applies the
+// level to every song; it is the only state in which RHY_OTHER is ever set.
+enum RhythmBit : unsigned
+{
+    RHY_TANGO   = 1u,
+    RHY_VALS    = 2u,
+    RHY_MILONGA = 4u,
+    RHY_OTHER   = 8u,
+};
+inline constexpr unsigned RHY_ALL = RHY_TANGO | RHY_VALS | RHY_MILONGA | RHY_OTHER;
+
 struct Component
 {
     Field      field      = Field::Genre;
@@ -41,11 +61,13 @@ struct Component
     GroupValue genreValue = GroupValue::Exact;     // Genre (Exact / Normalize)
     YearMode   yearMode   = YearMode::Y10;         // Year
     GroupScope yearScope  = GroupScope::All;       // Year (All / Instrumental-only)
+    unsigned   rhythmMask = RHY_ALL;               // which rhythms this level applies to
 };
 
 bool         fieldHasSubmode (Field f);
 std::wstring fieldLabel (Field f);
 std::wstring componentModeLabel (const Component& c);   // human-readable mode
+std::wstring rhythmSummaryLabel (unsigned mask);        // "All rhythms" / "Tango, Vals"
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Scanned song + preview tree
@@ -102,6 +124,7 @@ enum CtrlId
     IDC_LIST_PREVIEW  = 3110,
     IDC_BTN_CLOSE     = 3111,
     IDC_BTN_SETTINGS  = 3112,
+    IDC_COMBO_RHYTHM  = 3113,
 };
 
 inline constexpr UINT_PTR TIMER_OP        = 1;   // drives the chunked build phase
@@ -117,7 +140,7 @@ inline constexpr UINT WM_APP_SCANSTEP = WM_APP + 1;
 //  Layout constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr int DLG_W       = 720;
+inline constexpr int DLG_W       = 800;
 inline constexpr int DLG_H       = 460;
 inline constexpr int TITLE_H     = 30;
 inline constexpr int PAD         = 10;
@@ -125,11 +148,11 @@ inline constexpr int ROW_H       = 28;
 inline constexpr int BTN_H       = 28;
 inline constexpr int COMP_ITEM_H = 26;
 inline constexpr int PREV_ITEM_H = 20;
-inline constexpr int LEFT_COL_PCT = 52;
+inline constexpr int LEFT_COL_PCT = 48;
 
 inline constexpr int FONT_NORMAL = 13;
 inline constexpr int FONT_SMALL  = 12;
-inline constexpr int FONT_HEADER = 14;
+inline constexpr int FONT_HEADER = 11;   // section headers (smaller, darker orange)
 inline constexpr int FONT_BRAND  = 16;
 
 inline constexpr const wchar_t* WND_CLASS = L"TigerFoldersVdjDialog";
@@ -162,9 +185,16 @@ public:
 
     // Path logic (TigerFoldersPath.cpp)
     std::wstring segmentFor (const Component& c, const ScannedSong& s) const;
-    std::wstring buildPathFor (const ScannedSong& s) const;       // root/.../leaf
+    std::wstring buildPathFor (const ScannedSong& s) const;       // root/.../leaf (first path)
+    // A song normally yields one path; with splitMultiSingers a multi-singer song
+    // yields one path per singer (filed under each singer's folder).
+    std::vector<std::wstring> buildPathsFor (const ScannedSong& s) const;
     std::wstring effectivePath (const std::wstring& full) const;  // trim at first excluded folder
     void         computeSingerYearRanges();   // fill singerYearRanges for [YY]/[YYYY] modes
+
+    // Map of destination path → folded path for the "Other" cutoff (empty when the
+    // cutoff is off). Songs whose path is a key are filed under the folded path.
+    std::map<std::wstring, std::wstring> computeOtherFolding() const;
 
     bool isUnfiled (const ScannedSong& s) const;   // path collapses to just the root
 
@@ -201,6 +231,7 @@ public:
     void uiResetAddRow();               // reset combos to placeholder after add/update
     void uiLoadComponentForEdit (int idx);   // double-click → edit in place
     void uiSetOpRunning (bool running); // toggle button labels/enable during scan/build
+    void uiRefreshActionButtons();      // Scan ↔ Back+Build depending on scan state
 
     // Parameter IDs
     enum ParamId { PID_OPEN = 0 };
@@ -209,6 +240,26 @@ public:
     // ── State ────────────────────────────────────────────────────────────────
     std::vector<Component>   components;
     std::wstring             rootName = L"MyLists";
+
+    // When a song has multiple singers (artist tag joined by " and " / " y "),
+    // file it under each singer's folder instead of one combined "A, B" folder.
+    bool                     splitMultiSingers = false;
+
+    // Build mode: false = append/merge into any existing tree; true = delete the
+    // existing same-named virtual folder first, then rebuild it from scratch.
+    bool                     replaceExisting = false;
+
+    // Fold Spanish accents (á→a, ñ→n, …) out of folder names. Default off.
+    bool                     normalizeSpanish = false;
+
+    // For [YY]/[YYYY] year-range name modes: render a single-year group as a
+    // range too ("44-44" instead of "44"). Default off.
+    bool                     singleYearRange = false;
+
+    // Small-folder "Other" cutoff: fold folders at/below folderCutoffSize songs
+    // into a sibling "Other" folder. folderCutoffMode chooses the scope.
+    CutoffMode               folderCutoffMode = CutoffMode::None;
+    int                      folderCutoffSize = 3;   // clamped to [2, 10] when active
 
     std::vector<ScannedSong> songs;
     std::vector<PreviewRow>  previewRows;
@@ -258,6 +309,7 @@ public:
     GroupValue pendingGenreValue = GroupValue::Exact;
     YearMode   pendingYearMode  = YearMode::Y10;
     GroupScope pendingYearScope = GroupScope::All;
+    unsigned   pendingRhythmMask = RHY_ALL;   // rhythm filter for the row being added
     bool       fieldChosen      = false;   // a primary field has been picked
 
     bool       showSettings     = false;
@@ -283,6 +335,8 @@ public:
     HWND hDlg            = nullptr;
     HWND hComboField     = nullptr;
     HWND hComboMode      = nullptr;
+    HWND hComboRhythm    = nullptr;
+    bool rhythmListSubclassed = false;   // dropdown listbox subclassed for checkboxes
     HWND hBtnAdd         = nullptr;
     HWND hListComponents = nullptr;
     HWND hBtnRemove      = nullptr;

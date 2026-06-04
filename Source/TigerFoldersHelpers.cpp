@@ -76,11 +76,97 @@ std::wstring sanitizeSegment (std::wstring v)
     return trimWs (v);
 }
 
+std::wstring normalizeLatinAccents (const std::wstring& s)
+{
+    std::wstring out;
+    out.reserve (s.size());
+    for (wchar_t c : s)
+    {
+        switch (c)
+        {
+            // a
+            case L'á': case L'à': case L'â': case L'ä': case L'ã': case L'å': out += L'a'; break;
+            case L'Á': case L'À': case L'Â': case L'Ä': case L'Ã': case L'Å': out += L'A'; break;
+            // e
+            case L'é': case L'è': case L'ê': case L'ë': out += L'e'; break;
+            case L'É': case L'È': case L'Ê': case L'Ë': out += L'E'; break;
+            // i
+            case L'í': case L'ì': case L'î': case L'ï': out += L'i'; break;
+            case L'Í': case L'Ì': case L'Î': case L'Ï': out += L'I'; break;
+            // o
+            case L'ó': case L'ò': case L'ô': case L'ö': case L'õ': out += L'o'; break;
+            case L'Ó': case L'Ò': case L'Ô': case L'Ö': case L'Õ': out += L'O'; break;
+            // u
+            case L'ú': case L'ù': case L'û': case L'ü': out += L'u'; break;
+            case L'Ú': case L'Ù': case L'Û': case L'Ü': out += L'U'; break;
+            // n / c
+            case L'ñ': out += L'n'; break;
+            case L'Ñ': out += L'N'; break;
+            case L'ç': out += L'c'; break;
+            case L'Ç': out += L'C'; break;
+            // Spanish punctuation marks → dropped
+            case L'¿': case L'¡': break;
+            default:   out += c;  break;
+        }
+    }
+    return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Person-name parsing
 //
-//  Accepts either "First Middle Last" or "Last, First Middle".
+//  Accepts either "First Middle Last" or "Last, First Middle". Surname particles
+//  (De, Di, Del, Della, Van, Von, …) stay attached to the surname so a "First
+//  Last" name like "Carlos Di Sarli" yields "Di Sarli", not "Sarli".
 // ─────────────────────────────────────────────────────────────────────────────
+
+static std::vector<std::wstring> splitWords (const std::wstring& s)
+{
+    std::vector<std::wstring> words;
+    std::wstring cur;
+    for (wchar_t c : s)
+    {
+        if (iswspace (c)) { if (!cur.empty()) { words.push_back (cur); cur.clear(); } }
+        else              cur += c;
+    }
+    if (!cur.empty()) words.push_back (cur);
+    return words;
+}
+
+static bool isNameParticle (const std::wstring& w)
+{
+    static const wchar_t* kParticles[] = {
+        L"de", L"del", L"della", L"delle", L"di", L"da", L"das", L"dos", L"du",
+        L"la", L"le", L"las", L"los", L"lo", L"van", L"von", L"der", L"den",
+        L"st", L"san", L"santa", L"mac", L"mc"
+    };
+    std::wstring lw = toLowerW (w);
+    for (const wchar_t* p : kParticles)
+        if (lw == p) return true;
+    return false;
+}
+
+// Index of the first surname word in `words` — the trailing word plus any
+// leading particles, but never the whole name (there must be room for a first
+// name unless the name is only a surname).
+static size_t surnameStart (const std::vector<std::wstring>& words)
+{
+    if (words.empty()) return 0;
+    size_t i = words.size() - 1;
+    while (i > 0 && isNameParticle (words[i - 1])) --i;
+    return i;
+}
+
+static std::wstring joinWords (const std::vector<std::wstring>& words, size_t from, size_t to)
+{
+    std::wstring out;
+    for (size_t k = from; k < to && k < words.size(); ++k)
+    {
+        if (!out.empty()) out += L' ';
+        out += words[k];
+    }
+    return out;
+}
 
 std::wstring nameLast (const std::wstring& nameIn)
 {
@@ -91,8 +177,9 @@ std::wstring nameLast (const std::wstring& nameIn)
     if (comma != std::wstring::npos)
         return trimWs (name.substr (0, comma));
 
-    size_t space = name.find_last_of (L' ');
-    return (space == std::wstring::npos) ? name : trimWs (name.substr (space + 1));
+    std::vector<std::wstring> words = splitWords (name);
+    if (words.empty()) return name;
+    return joinWords (words, surnameStart (words), words.size());
 }
 
 std::wstring nameFirst (const std::wstring& nameIn)
@@ -104,8 +191,9 @@ std::wstring nameFirst (const std::wstring& nameIn)
     if (comma != std::wstring::npos)
         return trimWs (name.substr (comma + 1));
 
-    size_t space = name.find_last_of (L' ');
-    return (space == std::wstring::npos) ? std::wstring() : trimWs (name.substr (0, space));
+    std::vector<std::wstring> words = splitWords (name);
+    size_t start = surnameStart (words);
+    return (start == 0) ? std::wstring() : joinWords (words, 0, start);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

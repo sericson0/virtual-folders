@@ -43,7 +43,12 @@ void TigerFoldersPlugin::scanBegin()
     if (op != Op::None) return;
 
     songs.clear();
+    expandedFolders.clear();
     cntUnfiled = 0;
+    // Start a fresh scan in the plain folder-tree view (drop any filter/lens).
+    previewLens = PreviewLens::Tree;
+    previewFilter.clear();
+    if (hEditFilter) SetWindowTextW (hEditFilter, L"");
 
     preScanFolder = vdjGetString ("get_browsed_folder_path");
     selectedFolderPath = preScanFolder;
@@ -128,11 +133,12 @@ void TigerFoldersPlugin::scanStep()
         return;
     }
 
-    // Read every tag the components might use into a row. (title is intentionally
-    // not read — it never feeds a folder path, only the filepath is referenced.)
+    // Read every tag the components might use into a row. Title doesn't feed a
+    // folder path, but it labels the songs shown when a preview folder is expanded.
     auto readRow = [this] (ScannedSong& s) {
         s.filePath = vdjGetString ("get_browsed_filepath");
         s.artist   = vdjGetString ("get_browsed_song 'artist'");
+        s.title    = vdjGetString ("get_browsed_song 'title'");
         s.genre    = vdjGetString ("get_browsed_song 'genre'");
         s.grouping = vdjGetString ("get_browsed_song 'grouping'");
         s.label    = vdjGetString ("get_browsed_song 'label'");
@@ -198,7 +204,10 @@ void TigerFoldersPlugin::scanStep()
 
 void TigerFoldersPlugin::scanFinish()
 {
-    KillTimer (hDlg, TIMER_OP);
+    // The scan is driven by TIMER_SETTLE then WM_APP_SCANSTEP — never TIMER_OP
+    // (that's the build timer). Clear the settle timer in case we arrive here
+    // mid-settle (e.g. cancelled before the row phase started).
+    KillTimer (hDlg, TIMER_SETTLE);
     if (mmPeriodSet) { timeEndPeriod (1); mmPeriodSet = false; }
     bool cancelled = opCancel;
     op = Op::None;
@@ -214,6 +223,7 @@ void TigerFoldersPlugin::scanFinish()
         if (isUnfiled (s)) ++cntUnfiled;
 
     rebuildPreview();
+    uiRelayout();            // the preview now has rows → position filter/issue rows
     uiRefreshPreviewList();
 
     std::wstring msg;
@@ -235,49 +245,137 @@ void TigerFoldersPlugin::scanFinish()
 
 namespace
 {
-    struct TreeNode
-    {
-        std::map<std::wstring, TreeNode> children;   // ordered by name
-        int count = 0;
-    };
-
-    void flatten (const TreeNode& node, int depth, const std::wstring& parentPath,
-                  std::vector<PreviewRow>& rows, int& folderCount)
+    // Collect the paths of every non-leaf folder (one with child folders) under
+    // `node`. Seeds the default "all folders expanded" view and drives Expand-all;
+    // leaf (song-only) folders are excluded so their song lists stay collapsed.
+    void collectNonLeafPaths (const PreviewNode& node, const std::wstring& parentPath,
+                              std::set<std::wstring>& out)
     {
         for (const auto& kv : node.children)
         {
-            ++folderCount;
             std::wstring path = parentPath.empty() ? kv.first : (parentPath + L"/" + kv.first);
+            if (!kv.second.children.empty()) out.insert (path);
+            collectNonLeafPaths (kv.second, path, out);
+        }
+    }
+
+    // Total folder nodes in the tree, independent of which are expanded — so the
+    // "→ N folders" header reflects the whole structure, not just visible rows.
+    int countAllFolders (const PreviewNode& node)
+    {
+        int c = 0;
+        for (const auto& kv : node.children) c += 1 + countAllFolders (kv.second);
+        return c;
+    }
+
+    // Folder-name filter: insert into `out` every folder path that matches
+    // `filterLower` (case-insensitive substring) or is an ancestor of a match, so
+    // the matched folders show with the spine needed to reach them. Returns whether
+    // this subtree contains any match.
+    bool collectFilterVisible (const PreviewNode& node, const std::wstring& parentPath,
+                               const std::wstring& filterLower, std::set<std::wstring>& out)
+    {
+        bool anyVisible = false;
+        for (const auto& kv : node.children)
+        {
+            std::wstring path = parentPath.empty() ? kv.first : (parentPath + L"/" + kv.first);
+            bool selfMatch    = toLowerW (kv.first).find (filterLower) != std::wstring::npos;
+            bool childVisible = collectFilterVisible (kv.second, path, filterLower, out);
+            if (selfMatch || childVisible) { out.insert (path); anyVisible = true; }
+        }
+        return anyVisible;
+    }
+
+    void flattenNode (const PreviewNode& node, int depth, const std::wstring& parentPath,
+                      std::vector<PreviewRow>& rows, int& folderCount,
+                      const std::set<std::wstring>& expanded,
+                      const std::vector<ScannedSong>& songs, bool sortByYear,
+                      const std::set<std::wstring>* filterVisible)
+    {
+        const bool filtering = (filterVisible != nullptr);
+        for (const auto& kv : node.children)
+        {
+            std::wstring path = parentPath.empty() ? kv.first : (parentPath + L"/" + kv.first);
+            if (filtering && !filterVisible->count (path)) continue;   // filtered out
+            ++folderCount;
+            // While filtering, force the matched spine open (child folders shown);
+            // otherwise honor the user's expand/collapse state.
+            bool isExpanded = filtering ? true : (expanded.count (path) > 0);
+
             PreviewRow row;
-            row.name   = kv.first;
-            row.path   = path;
-            row.depth  = depth;
-            row.count  = kv.second.count;
-            row.isLeaf = kv.second.children.empty();
+            row.name     = kv.first;
+            row.path     = path;
+            row.depth    = depth;
+            row.count    = kv.second.count;
+            row.isLeaf   = kv.second.children.empty();
+            row.hasSongs = !kv.second.songEntries.empty();
             rows.push_back (row);
-            flatten (kv.second, depth + 1, path, rows, folderCount);
+
+            if (!isExpanded) continue;   // collapsed: hide children + songs
+
+            // List the song titles filed directly in this folder (alphabetical,
+            // tie-broken on songIndex for a stable order), then recurse subfolders.
+            // While filtering we keep the view to folders only (no song rows).
+            if (!filtering && row.hasSongs)
+            {
+                struct SortEntry { std::wstring key; std::wstring name; int idx; int year; };
+                std::vector<SortEntry> entries;
+                entries.reserve (kv.second.songEntries.size());
+                for (const auto& e : kv.second.songEntries)
+                {
+                    int yr = (e.second >= 0 && e.second < (int) songs.size())
+                             ? yearToInt (songs[e.second].year) : 0;
+                    entries.push_back ({ toLowerW (e.first), e.first, e.second, yr });
+                }
+                std::sort (entries.begin(), entries.end(),
+                           [sortByYear] (const SortEntry& a, const SortEntry& b) {
+                               if (sortByYear)
+                               {
+                                   int ka = a.year ? a.year : 1000000;
+                                   int kb = b.year ? b.year : 1000000;
+                                   if (ka != kb) return ka < kb;
+                               }
+                               if (a.key != b.key) return a.key < b.key;
+                               return a.idx < b.idx;
+                           });
+                for (const auto& e : entries)
+                {
+                    PreviewRow sr;
+                    sr.name      = e.name;
+                    sr.path      = path;     // shares the folder's exclusion identity
+                    sr.depth     = depth + 1;
+                    sr.isSong    = true;
+                    sr.songIndex = e.idx;
+                    rows.push_back (sr);
+                }
+            }
+
+            flattenNode (kv.second, depth + 1, path, rows, folderCount, expanded,
+                         songs, sortByYear, filterVisible);
         }
     }
 }
 
-void TigerFoldersPlugin::rebuildPreview()
+void TigerFoldersPlugin::rebuildPreview (bool preserveExpansion)
 {
-    previewRows.clear();
-    previewFolderCount = 0;
-
     computeSingerYearRanges();
 
     auto fold = computeOtherFolding();
 
-    TreeNode root;
-    for (const auto& s : songs)
+    previewTree = PreviewNode {};
+    for (size_t si = 0; si < songs.size(); ++si)
+    {
+        const ScannedSong& s = songs[si];
+        std::wstring disp = trimWs (s.title);
+        if (disp.empty()) disp = fs::path (s.filePath).stem().wstring();
+
         for (const auto& rawPath : buildPathsFor (s))
         {
             if (rawPath.empty()) continue;
             auto fit = fold.find (rawPath);
             const std::wstring& path = (fit == fold.end()) ? rawPath : fit->second;
 
-            TreeNode* cur = &root;
+            PreviewNode* cur = &previewTree;
             size_t start = 0;
             while (start <= path.size())
             {
@@ -288,8 +386,100 @@ void TigerFoldersPlugin::rebuildPreview()
                 if (slash == std::wstring::npos) break;
                 start = slash + 1;
             }
+            // `cur` now points at the deepest folder this song is filed in.
+            cur->songEntries.push_back ({ disp, (int) si });
         }
+    }
 
-    flatten (root, 0, L"", previewRows, previewFolderCount);
+    if (!preserveExpansion)
+    {
+        // Default view: the whole folder hierarchy open, individual song lists
+        // collapsed. Expanding a folder shows its child folders AND its direct
+        // songs; leaf (song-only) folders therefore start with their songs hidden.
+        expandedFolders.clear();
+        collectNonLeafPaths (previewTree, L"", expandedFolders);
+    }
+
+    computeQualityCounts();
+    flattenPreviewRows();
+}
+
+// Tally missing-tag counts (+ unfiled) so the preview's issue chips stay accurate
+// as the structure is edited. Cheap relative to the path build already done above.
+void TigerFoldersPlugin::computeQualityCounts()
+{
+    qNoYear = qNoGenre = qNoArtist = cntUnfiled = 0;
+    for (const auto& s : songs)
+    {
+        if (yearToInt (s.year) == 0)     ++qNoYear;
+        if (trimWs (s.genre).empty())    ++qNoGenre;
+        if (trimWs (s.artist).empty())   ++qNoArtist;
+        if (isUnfiled (s))               ++cntUnfiled;
+    }
+}
+
+void TigerFoldersPlugin::flattenPreviewRows()
+{
+    previewRows.clear();
+
+    // Problem-song lens: a flat, alphabetical list of the matching songs (as song
+    // rows, so the metadata tooltip works) instead of the folder tree.
+    if (previewLens != PreviewLens::Tree)
+    {
+        auto matches = [&] (const ScannedSong& s) -> bool {
+            switch (previewLens)
+            {
+                case PreviewLens::Unfiled:  return isUnfiled (s);
+                case PreviewLens::NoYear:   return yearToInt (s.year) == 0;
+                case PreviewLens::NoGenre:  return trimWs (s.genre).empty();
+                case PreviewLens::NoArtist: return trimWs (s.artist).empty();
+                default:                    return false;
+            }
+        };
+        struct E { std::wstring key; std::wstring disp; int idx; };
+        std::vector<E> es;
+        for (size_t i = 0; i < songs.size(); ++i)
+        {
+            if (!matches (songs[i])) continue;
+            std::wstring disp = trimWs (songs[i].title);
+            if (disp.empty()) disp = fs::path (songs[i].filePath).stem().wstring();
+            es.push_back ({ toLowerW (disp), disp, (int) i });
+        }
+        std::sort (es.begin(), es.end(),
+                   [] (const E& a, const E& b) { return a.key != b.key ? a.key < b.key : a.idx < b.idx; });
+        for (const auto& e : es)
+        {
+            PreviewRow r;
+            r.name      = e.disp;
+            r.isSong    = true;
+            r.songIndex = e.idx;
+            r.depth     = 0;
+            previewRows.push_back (r);
+        }
+        previewFolderCount = countAllFolders (previewTree);
+        applyExclusionFlags();
+        return;
+    }
+
+    int visibleFolders = 0;   // flattenNode counts only emitted rows (discarded)
+    std::set<std::wstring> filterVisible;
+    const std::set<std::wstring>* fv = nullptr;
+    std::wstring f = trimWs (previewFilter);
+    if (!f.empty())
+    {
+        collectFilterVisible (previewTree, L"", toLowerW (f), filterVisible);
+        fv = &filterVisible;
+    }
+    flattenNode (previewTree, 0, L"", previewRows, visibleFolders, expandedFolders,
+                 songs, sortByYear, fv);
+    previewFolderCount = countAllFolders (previewTree);   // total, not just visible
     applyExclusionFlags();
+}
+
+void TigerFoldersPlugin::expandAllFolders()
+{
+    // Expand every non-leaf folder (reveals the full folder spine). Leaf song lists
+    // remain per-folder opt-in to avoid inserting a row per song for huge libraries.
+    expandedFolders.clear();
+    collectNonLeafPaths (previewTree, L"", expandedFolders);
 }

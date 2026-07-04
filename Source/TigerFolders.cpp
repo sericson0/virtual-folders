@@ -248,7 +248,6 @@ static bool parseComponent (const std::string& tokenIn, Component& out)
         // Legacy entries may carry a third "normalize"/"exact" token — ignored now.
         std::string scope = (parts.size() > 1) ? parts[1] : "all";
         c.groupScope = (scope == "inst") ? GroupScope::Instrumental : GroupScope::All;
-        c.groupValue = GroupValue::Exact;
     }
     else if (c.field == Field::Year)
     {
@@ -341,8 +340,11 @@ HRESULT VDJ_API TigerFoldersPlugin::OnProcessSamples (float* /*buffer*/, int /*n
 
 ULONG VDJ_API TigerFoldersPlugin::Release()
 {
+    // The class was registered with the plugin DLL's hInstance, so capture it
+    // before delete (and don't use the host module via GetModuleHandleW(nullptr),
+    // which would silently fail to unregister and leak the class atom).
+    HINSTANCE hInst = hInstance;
     delete this;
-    HINSTANCE hInst = GetModuleHandleW (nullptr);
     UnregisterClassW (WND_CLASS, hInst);
     return S_OK;
 }
@@ -475,6 +477,10 @@ void TigerFoldersPlugin::loadSettings()
         {
             singleYearRange = (trimWs (toWide (val)) == L"1");
         }
+        else if (key == "sortbyyear")
+        {
+            sortByYear = (trimWs (toWide (val)) == L"1");
+        }
         else if (key == "cutoffmode")
         {
             std::wstring m = trimWs (toWide (val));
@@ -485,7 +491,7 @@ void TigerFoldersPlugin::loadSettings()
         else if (key == "cutoffsize")
         {
             int n = _wtoi (trimWs (toWide (val)).c_str());
-            folderCutoffSize = (n < 2) ? 2 : (n > 10 ? 10 : n);
+            folderCutoffSize = (n < 1) ? 1 : (n > 10 ? 10 : n);
         }
         else if (key == "excluded")
         {
@@ -529,6 +535,7 @@ void TigerFoldersPlugin::saveSettings()
         out << "replaceexisting=" << (replaceExisting ? 1 : 0) << "\n";
         out << "normalizespanish=" << (normalizeSpanish ? 1 : 0) << "\n";
         out << "singleyearrange=" << (singleYearRange ? 1 : 0) << "\n";
+        out << "sortbyyear=" << (sortByYear ? 1 : 0) << "\n";
         out << "cutoffmode="
             << (folderCutoffMode == CutoffMode::Leaf ? "leaf"
               : folderCutoffMode == CutoffMode::Any  ? "any" : "none") << "\n";

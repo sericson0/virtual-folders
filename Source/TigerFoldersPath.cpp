@@ -103,7 +103,7 @@ static std::wstring formatNameField (const std::wstring& field, NameMode mode)
 //  Applied to the Genre field (Exact / Normalize).
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::wstring normalizeRhythm (const std::wstring& raw)
+std::wstring normalizeRhythm (const std::wstring& raw)
 {
     std::wstring g = toLowerW (raw);
     // Word-ish substring match, any case.
@@ -490,7 +490,9 @@ std::map<std::wstring, std::wstring> TigerFoldersPlugin::computeOtherFolding() c
     std::map<std::wstring, std::wstring> remap;
     if (folderCutoffMode == CutoffMode::None) return remap;
 
-    int cutoff = (folderCutoffSize < 2) ? 2 : (folderCutoffSize > 10 ? 10 : folderCutoffSize);
+    // Match the UI's [1,10] range (the size chip cycles down to 1) so "≤ 1" really
+    // folds single-song leaves instead of silently behaving like "≤ 2".
+    int cutoff = (folderCutoffSize < 1) ? 1 : (folderCutoffSize > 10 ? 10 : folderCutoffSize);
 
     // subtreeCount[node] = songs filed at the node or anywhere below it.
     // nonLeaf = every node that is a proper ancestor of some path (i.e. has children).

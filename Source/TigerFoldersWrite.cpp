@@ -62,6 +62,19 @@ static std::string toLowerA (std::string s)
     return s;
 }
 
+// On-disk .vdjfolder path for a "a/b/c" virtual-folder path (nested .subfolders/
+// dirs, leaf name + ".vdjfolder"). Same construction ensureVirtualFolderListFileExists
+// and appendSongsToLeaf use; shared here for the merge diff.
+static fs::path listFilePathFor (const fs::path& root, const std::wstring& listPath)
+{
+    std::vector<std::wstring> parts = splitPath (listPath);
+    if (parts.empty()) return {};
+    fs::path dir = root;
+    for (size_t i = 0; i + 1 < parts.size(); ++i)
+        dir /= fs::path (parts[i] + L".subfolders");
+    return dir / fs::path (parts.back() + L".vdjfolder");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  MyLists root: only succeeds if an existing MyLists directory is found
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,10 +283,11 @@ void TigerFoldersPlugin::buildPlan()
     auto fold = computeOtherFolding();
 
     std::set<std::wstring> folderSet;
-    std::map<std::wstring, std::vector<std::wstring>> leafMap;
+    std::map<std::wstring, std::vector<int>> leafMap;   // leaf path → song indices
 
-    for (const auto& s : songs)
+    for (size_t si = 0; si < songs.size(); ++si)
     {
+        const ScannedSong& s = songs[si];
         bool filed = false, atRoot = false;
 
         // A multi-singer song under splitMultiSingers is filed under each singer.
@@ -303,7 +317,7 @@ void TigerFoldersPlugin::buildPlan()
                 start = slash + 1;
             }
 
-            leafMap[path].push_back (s.filePath);
+            leafMap[path].push_back ((int) si);
             filed = true;
             if (path.find (L'/') == std::wstring::npos) atRoot = true;
         }
@@ -315,8 +329,63 @@ void TigerFoldersPlugin::buildPlan()
     // std::set iterates lexicographically → parents sort before their children.
     planFolders.assign (folderSet.begin(), folderSet.end());
     for (auto& kv : leafMap)
-        planLeaves.emplace_back (kv.first, std::move (kv.second));
+    {
+        std::vector<int>& idxs = kv.second;
+        // Optionally order each folder's tracks chronologically (undated last),
+        // tie-broken by title; otherwise keep the scan/browser order.
+        if (sortByYear)
+            std::stable_sort (idxs.begin(), idxs.end(),
+                [this] (int a, int b) {
+                    int ya = yearToInt (songs[a].year), yb = yearToInt (songs[b].year);
+                    int ka = ya ? ya : 1000000, kb = yb ? yb : 1000000;
+                    if (ka != kb) return ka < kb;
+                    return toLowerW (songs[a].title) < toLowerW (songs[b].title);
+                });
+        std::vector<std::wstring> paths;
+        paths.reserve (idxs.size());
+        for (int i : idxs) paths.push_back (songs[i].filePath);
+        planLeaves.emplace_back (kv.first, std::move (paths));
+    }
     cntFolders = (int) planFolders.size();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Merge diff — what a Build would add vs. what already exists on disk. Call
+//  after buildPlan() so planFolders / planLeaves are populated.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TigerFoldersPlugin::BuildDiff TigerFoldersPlugin::computeBuildDiff() const
+{
+    BuildDiff d;
+    fs::path root;
+    std::error_code ec;
+    const_cast<TigerFoldersPlugin*> (this)->resolveMyListsRoot (root);
+    if (root.empty()) return d;
+
+    for (const auto& fp : planFolders)
+    {
+        fs::path file = listFilePathFor (root, fp);
+        if (!file.empty() && !fs::exists (file, ec)) ++d.newFolders;
+    }
+
+    for (const auto& leaf : planLeaves)
+    {
+        fs::path file = listFilePathFor (root, leaf.first);
+        std::string seen;   // existing file content (lowercased) + within-batch dedupe
+        if (!file.empty() && fs::exists (file, ec))
+        {
+            std::ifstream in (file, std::ios::binary);
+            std::string content ((std::istreambuf_iterator<char> (in)), std::istreambuf_iterator<char>());
+            seen = toLowerA (content);
+        }
+        for (const auto& wpath : leaf.second)
+        {
+            std::string token = toLowerA ("path=\"" + xmlEscape (toUtf8 (wpath)) + "\"");
+            if (seen.find (token) != std::string::npos) ++d.dupTracks;
+            else { seen += token; ++d.newTracks; }
+        }
+    }
+    return d;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -403,7 +472,28 @@ void TigerFoldersPlugin::buildFinish()
         msg += L" · " + std::to_wstring (cntUnfiled) + L" at root";
     if (cntErrors > 0)
         msg += L" · " + std::to_wstring (cntErrors) + L" write errors";
+    if (!cancelled && cntFolders > 0)
+        msg += L" · in VirtualDJ ▸ Folders ▸ " + sanitizeSegment (rootName);
 
-    uiSetOpRunning (false);
+    // On a successful build, return to the starting menu so the user can
+    // immediately scan a new folder. The status message persists to confirm what was built.
+    if (!cancelled)
+    {
+        songs.clear();
+        previewRows.clear();
+        previewFolderCount = 0;
+        expandedFolders.clear();
+        cntUnfiled = 0;
+        previewLens = PreviewLens::Tree;
+        previewFilter.clear();
+        if (hEditFilter) SetWindowTextW (hEditFilter, L"");
+    }
+
+    uiSetOpRunning (false);   // songs is empty → uiRefreshActionButtons shows "Scan & Preview"
+    if (!cancelled)
+    {
+        uiRelayout();             // filter/issue rows go away now that the scan is gone
+        uiRefreshPreviewList();   // hides the preview listbox now that previewRows is empty
+    }
     uiUpdateStatus (msg, cntErrors > 0);
 }

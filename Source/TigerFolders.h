@@ -57,7 +57,6 @@ struct Component
     Field      field      = Field::Genre;
     NameMode   nameMode   = NameMode::FirstLast;   // Bandleader / Singer
     GroupScope groupScope = GroupScope::All;       // Grouping
-    GroupValue groupValue = GroupValue::Exact;     // Grouping (legacy; scope-only now)
     GroupValue genreValue = GroupValue::Exact;     // Genre (Exact / Normalize)
     YearMode   yearMode   = YearMode::Y10;         // Year
     GroupScope yearScope  = GroupScope::All;       // Year (All / Instrumental-only)
@@ -68,6 +67,7 @@ bool         fieldHasSubmode (Field f);
 std::wstring fieldLabel (Field f);
 std::wstring componentModeLabel (const Component& c);   // human-readable mode
 std::wstring rhythmSummaryLabel (unsigned mask);        // "All rhythms" / "Tango, Vals"
+std::wstring normalizeRhythm (const std::wstring& raw); // genre tag → Tango/Vals/Milonga/…
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Scanned song + preview tree
@@ -90,21 +90,40 @@ struct ScannedSong
     bool         instrumental = false;
 };
 
-// Flattened preview-tree row for owner-draw display.
+// Cached preview tree, built once per scan/structure change. Expand/collapse and
+// song-listing just re-flatten this into `previewRows` without re-walking `songs`.
+struct PreviewNode
+{
+    std::map<std::wstring, PreviewNode> children;             // ordered by name
+    int count = 0;                                            // songs in this subtree
+    std::vector<std::pair<std::wstring, int>> songEntries;    // direct songs: title + index
+};
+
+// Flattened preview-tree row for owner-draw display. A row is either a folder
+// node or, when its parent folder is expanded, an individual song title.
 struct PreviewRow
 {
-    std::wstring name;
-    std::wstring path;        // full folder path from the root (exclusion identity)
+    std::wstring name;        // folder name, or song title for song rows
+    std::wstring path;        // full folder path from the root (exclusion identity);
+                              // for a song row, the path of the folder it sits in
     int          depth = 0;
-    int          count = 0;   // songs in this node's subtree
+    int          count = 0;   // songs in this node's subtree (folders only)
     bool         isLeaf = false;
     bool         excluded = false;          // user unchecked this folder
     bool         ancestorExcluded = false;  // an ancestor folder is unchecked
+    bool         isSong  = false;           // this row is a song title, not a folder
+    bool         hasSongs = false;          // folder holds songs directly (expandable)
+    int          songIndex = -1;            // index into `songs` for a song row (else -1)
 };
 
 // Long-running operation, driven in chunks by a WM_TIMER state machine so the
 // UI thread never blocks.
 enum class Op { None, Scanning, Building };
+
+// Preview "lens": the normal folder tree, or a flat list of problem songs so the
+// DJ can find + fix them. Unfiled = landed at the root (no component matched);
+// the others flag missing tags regardless of where the song filed.
+enum class PreviewLens { Tree, Unfiled, NoYear, NoGenre, NoArtist };
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Control IDs
@@ -125,16 +144,26 @@ enum CtrlId
     IDC_BTN_CLOSE     = 3111,
     IDC_BTN_SETTINGS  = 3112,
     IDC_COMBO_RHYTHM  = 3113,
+    IDC_EDIT_FILTER   = 3114,
 };
 
 inline constexpr UINT_PTR TIMER_OP        = 1;   // drives the chunked build phase
 inline constexpr UINT_PTR TIMER_KEEPALIVE = 2;   // re-asserts the window on top
 inline constexpr UINT_PTR TIMER_SETTLE    = 3;   // waits for recurse_folder to populate
+inline constexpr UINT_PTR TIMER_ROOTEDIT  = 4;   // debounces root-name keystrokes
 
 // The scan advances by posting this to itself rather than via WM_TIMER. WM_TIMER
 // is coalesced and floored to ~10-15ms, which capped the scan at ~1k rows/sec
 // regardless of read speed; a self-posted message runs as fast as rows can be read.
 inline constexpr UINT WM_APP_SCANSTEP = WM_APP + 1;
+
+// Tooltip tool IDs for painted areas in the main window (rect-based, not HWND-based).
+inline constexpr UINT_PTR ATIP_CUTMODE = 200;
+inline constexpr UINT_PTR ATIP_CUTSIZE = 201;
+inline constexpr UINT_PTR ATIP_YEARPAD = 202;
+inline constexpr UINT_PTR ATIP_SPANISH = 203;
+inline constexpr UINT_PTR ATIP_SPLIT   = 204;
+inline constexpr UINT_PTR ATIP_REPLACE = 205;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Layout constants
@@ -198,16 +227,31 @@ public:
 
     bool isUnfiled (const ScannedSong& s) const;   // path collapses to just the root
 
+    // Recompute the tag-hygiene counts (qNoYear/qNoGenre/qNoArtist) and cntUnfiled
+    // from `songs` against the current structure. Cheap; run on every preview rebuild.
+    void computeQualityCounts();
+
+    // Merge-diff: how much a Build would add vs. what already exists on disk.
+    struct BuildDiff { int newFolders = 0; int newTracks = 0; int dupTracks = 0; };
+    BuildDiff computeBuildDiff() const;    // reads existing .vdjfolder files
+
     // Preview folder exclusions (checkboxes)
     void applyExclusionFlags();                 // recompute excluded/ancestorExcluded on rows
     void togglePreviewExclusion (int rowIdx);   // check/uncheck a preview folder
+    void togglePreviewExpand (int rowIdx);      // expand/collapse a folder's song titles
 
     // Scan — chunked state machine (TigerFoldersScan.cpp)
     void scanBegin();
     void scanSettleStep();              // wait for recurse_folder to finish flattening
     void scanStep();                    // process one browser row per tick
     void scanFinish();
-    void rebuildPreview();              // fills `previewRows` + counts from `songs`
+    // Rebuilds the cached `previewTree` from `songs`, then flattens it. On a fresh
+    // rebuild (preserveExpansion=false) the folder hierarchy is expanded to its
+    // default (all folders open, song lists collapsed); the expand/collapse toggles
+    // pass true so a structure/setting change never leaves a stale expansion.
+    void rebuildPreview (bool preserveExpansion = false);
+    void flattenPreviewRows();          // previewTree (+ expandedFolders) → previewRows
+    void expandAllFolders();            // fill expandedFolders with every folder path
 
     // Write engine (TigerFoldersWrite.cpp)
     bool resolveMyListsRoot (fs::path& out) const;   // true only if an existing MyLists dir
@@ -232,6 +276,7 @@ public:
     void uiLoadComponentForEdit (int idx);   // double-click → edit in place
     void uiSetOpRunning (bool running); // toggle button labels/enable during scan/build
     void uiRefreshActionButtons();      // Scan ↔ Back+Build depending on scan state
+    void uiRelayout();                  // re-run applyLayout (e.g. after scan/build changes rows)
 
     // Parameter IDs
     enum ParamId { PID_OPEN = 0 };
@@ -256,15 +301,30 @@ public:
     // range too ("44-44" instead of "44"). Default off.
     bool                     singleYearRange = false;
 
+    // Order tracks within each folder by recording year (then title) on build and
+    // in the preview, instead of leaving them in scan/browser order. Undated tracks
+    // sort last. Default off.
+    bool                     sortByYear = false;
+
     // Small-folder "Other" cutoff: fold folders at/below folderCutoffSize songs
     // into a sibling "Other" folder. folderCutoffMode chooses the scope.
     CutoffMode               folderCutoffMode = CutoffMode::None;
-    int                      folderCutoffSize = 3;   // clamped to [2, 10] when active
+    int                      folderCutoffSize = 3;   // clamped to [1, 10] when active
 
     std::vector<ScannedSong> songs;
+    PreviewNode              previewTree;        // cached tree, flattened into rows
     std::vector<PreviewRow>  previewRows;
     int                      previewFolderCount = 0;
     std::set<std::wstring>   excludedFolders;     // full paths of unchecked folders
+    std::set<std::wstring>   expandedFolders;     // folder paths whose songs are shown
+
+    // Preview filtering + problem-song lenses.
+    std::wstring             previewFilter;                     // folder-name substring filter
+    PreviewLens              previewLens = PreviewLens::Tree;    // tree vs. flat problem list
+    int                      qNoYear = 0, qNoGenre = 0, qNoArtist = 0;  // tag-hygiene counts
+    // Clickable issue-chip rects (rect + PreviewLens as int), cached each paint so
+    // the click handler hit-tests exactly what was drawn.
+    std::vector<std::pair<RECT, int>> issueChipHits;
 
     // Min–max recording year per "parentPath/baseName" group, for [YY]/[YYYY] name
     // modes. Rebuilt from `songs` before each preview/build pass.
@@ -305,14 +365,12 @@ public:
     Field      pendingField    = Field::Genre;
     NameMode   pendingNameMode = NameMode::FirstLast;
     GroupScope pendingScope     = GroupScope::All;
-    GroupValue pendingValue     = GroupValue::Exact;
     GroupValue pendingGenreValue = GroupValue::Exact;
     YearMode   pendingYearMode  = YearMode::Y10;
     GroupScope pendingYearScope = GroupScope::All;
     unsigned   pendingRhythmMask = RHY_ALL;   // rhythm filter for the row being added
     bool       fieldChosen      = false;   // a primary field has been picked
 
-    bool       showSettings     = false;
     int        editingIndex     = -1;    // component being edited in place, or -1
 
     // Window persistence: keep the dialog floating above VDJ's browser even when
@@ -322,6 +380,11 @@ public:
     // the "open" intent.
     bool       dialogRequestedOpen  = true;
     bool       suppressNextHideSync = false;
+
+    // The gear (upper-left) opens a settings overlay that describes the tool and
+    // hosts the build/naming option toggles. While open the two-column content is
+    // hidden and the panel is painted in its place.
+    bool       settingsOpen = false;
 
     // Drag-reorder state for the component list
     bool       dragging   = false;
@@ -345,10 +408,15 @@ public:
     HWND hBtnScan        = nullptr;
     HWND hBtnBuild       = nullptr;
     HWND hListPreview    = nullptr;
+    HWND hEditFilter     = nullptr;   // preview folder-name filter box
     HWND hBtnClose       = nullptr;
-    HWND hBtnSettings    = nullptr;
+    HWND hBtnSettings    = nullptr;   // gear in the title bar → settings overlay
     HWND hModeTip        = nullptr;   // tooltip for the mode combo
     std::wstring modeTipText;         // backing buffer for the tooltip text
+    HWND hSongTip        = nullptr;   // tracking tooltip for expanded song rows
+    HWND hAreaTip        = nullptr;   // rect-based tooltips for painted chips + banner checks
+    std::wstring songTipText;         // backing buffer for the song tooltip text
+    int  songTipRow      = -1;        // preview row the song tooltip is showing for
 
     // Drag-reorder state for the component list
     int  dragFrom        = -1;

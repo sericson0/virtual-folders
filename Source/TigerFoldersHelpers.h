@@ -23,7 +23,8 @@ namespace TCol
     inline const COLORREF cardBorder  = RGB(42,  46,  62);
     inline const COLORREF textNormal  = RGB(176, 180, 192);
     inline const COLORREF textBright  = RGB(220, 224, 235);
-    inline const COLORREF textDim     = RGB(106, 110, 128);
+    inline const COLORREF textMuted   = RGB(140, 145, 162);   // data at lower emphasis (counts, modes)
+    inline const COLORREF textDim     = RGB(106, 110, 128);   // chrome / disabled / dead rows
     inline const COLORREF accent      = RGB(217, 108, 48);
     inline const COLORREF accentBrt   = RGB(243, 161, 15);
     inline const COLORREF buttonBg    = RGB(30,  34,  48);
@@ -62,6 +63,10 @@ std::wstring normalizeLatinAccents (const std::wstring& s);
 std::wstring nameLast (const std::wstring& name);
 // First name(s) from "First Last" or "Last, First".
 std::wstring nameFirst (const std::wstring& name);
+
+// Leading 4-digit year from a tag string ("1941", "1941-04-01" → 1941); 0 when
+// there is no usable 4-digit year.
+int yearToInt (const std::wstring& s);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  GDI helpers

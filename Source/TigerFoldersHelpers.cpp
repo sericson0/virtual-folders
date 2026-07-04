@@ -196,6 +196,17 @@ std::wstring nameFirst (const std::wstring& nameIn)
     return (start == 0) ? std::wstring() : joinWords (words, 0, start);
 }
 
+int yearToInt (const std::wstring& s)
+{
+    int year = 0, digits = 0;
+    for (wchar_t c : s)
+    {
+        if (c >= L'0' && c <= L'9') { year = year * 10 + (c - L'0'); if (++digits == 4) break; }
+        else if (digits > 0) break;
+    }
+    return (digits == 4 && year >= 1000) ? year : 0;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  GDI helpers
 // ─────────────────────────────────────────────────────────────────────────────
